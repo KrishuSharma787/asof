@@ -71,7 +71,8 @@ function classifyFailure(err: unknown): GeminiFailureKind {
 const SYSTEM_INSTRUCTION = `You are a legal research assistant analyzing how Indian courts have interpreted a specific Act/section, and reconstructing its legislative amendment history. You are given the Act name, an optional section, the verbatim statutory text of the section when available, a numbered list of retrieved JUDGMENT/COMMENTARY sources, and a separate numbered list of retrieved AMENDMENT-HISTORY sources (India Code pages, PRS India summaries, legislative annotations).
 
 Rules, all mandatory:
-1. Only include a judgment in key_judgments if its excerpt shows a court actually construing or interpreting the meaning of the provision — not merely citing, quoting, or mentioning it in passing.
+1. Only include a judgment in key_judgments if its excerpt shows a court actually construing or interpreting the meaning of a provision — not merely citing, quoting, or mentioning it in passing.
+1a. When a specific section is given, "the provision" means that section. When NO section is given, the question is about the Act as a whole: include the landmark judgments that construe ANY significant provision of it, and name the section each one construes in effect_on_section (e.g. "Construed 'education' in s. 2(15)"). Returning an empty list because no section was specified is wrong -- an Act-level query is asking which decisions matter most across the whole Act.
 2. Every supporting_quote (in key_judgments, highlighted_phrases, and amendment_timeline) must be an exact, verbatim substring copied from that specific entry's own source excerpt. Do not paraphrase, summarize, or combine text from different excerpts.
 3. Every source_url must be copied character-for-character from the excerpt list it came from. Never modify or invent a URL.
 4. If none of the JUDGMENT sources show a court actually interpreting the provision, set key_judgments to an empty array and reflect that in status/current_force_status_explanation/confidence — never invent an interpretation from your own training knowledge.
@@ -140,7 +141,7 @@ ${statuteBookSources.length > 0 ? formatSources(statuteBookSources, 1, STATUTE_B
 
 JUDGMENT/COMMENTARY sources:
 
-${sources.length > 0 ? formatSources(sources, statuteBookSources.length + 1, EXCERPT_CHAR_LIMIT, section ?? undefined) : "(none retrieved)"}
+${sources.length > 0 ? formatSources(sources, statuteBookSources.length + 1, EXCERPT_CHAR_LIMIT, section ?? actName.split(",")[0]) : "(none retrieved)"}
 
 AMENDMENT-HISTORY sources:
 

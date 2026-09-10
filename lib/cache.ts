@@ -11,6 +11,15 @@ interface CacheEntry<T> {
 
 const store = new Map<string, CacheEntry<unknown>>();
 
+// The citation graph is computed by a second request (see
+// app/api/citations/route.ts) so its Groq calls stay off the critical path.
+// That request needs the same retrieved judgment texts the first one used,
+// and they are far too large to hand back through the browser, so they are
+// parked here under a parallel key instead.
+export function buildSourcesCacheKey(actName: string, section: string | null): string {
+  return `sources::${buildCacheKey(actName, section)}`;
+}
+
 export function buildCacheKey(actName: string, section: string | null): string {
   const normalizedAct = actName.trim().toLowerCase();
   const normalizedSection = section?.trim().toLowerCase() ?? "";

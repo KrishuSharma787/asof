@@ -6,12 +6,12 @@ import {
   retrieveStatuteBook,
   type RetrievedJudgment,
 } from "@/lib/retrieval";
-import { fetchStatutoryText } from "@/lib/legislation";
+import { fetchStatutoryText, fetchActAmendments } from "@/lib/legislation";
 import { synthesizeInterpretation, GeminiError } from "@/lib/gemini";
 import { validateInterpretationResult } from "@/lib/validation";
-import { extractCitationEdges, type CitationEdge } from "@/lib/groq";
-import { detectConflicts, type ConflictEntry } from "@/lib/conflicts";
-import { buildCacheKey, getCached, setCached } from "@/lib/cache";
+import type { CitationEdge } from "@/lib/groq";
+import type { ConflictEntry } from "@/lib/conflicts";
+import { buildCacheKey, buildSourcesCacheKey, getCached, setCached } from "@/lib/cache";
 import type { InterpretationResult } from "@/types/schema";
 
 // Retrieval + 1 Gemini call (with 1 retry) + up to 45 Groq calls can, in the
@@ -25,7 +25,7 @@ export const maxDuration = 60;
 // it change, so a stale entry from before the change is never served. Cached
 // answers are as version-bound as the schema: a prompt fix that corrects a
 // wrong status is worthless if yesterday's wrong answer is still served.
-const RESPONSE_SCHEMA_VERSION = "7";
+const RESPONSE_SCHEMA_VERSION = "11";
 
 interface CheckRequestBody {
   actName?: unknown;
@@ -84,7 +84,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(cached);
   }
 
-  const [sources, amendmentSources, statuteBookSources, indiaCodeSection] = await Promise.all([
+  const [sources, amendmentSources, statuteBookSources, indiaCodeSection, statuteAmendments] =
+    await Promise.all([
     retrieveJudgments(actName, section).catch((err): RetrievedJudgment[] => {
       console.error("[api/check] retrieval failed unexpectedly:", err);
       return [];
@@ -92,6 +93,12 @@ export async function POST(req: NextRequest) {
     retrieveAmendmentHistory(actName, section),
     retrieveStatuteBook(actName),
     section ? fetchStatutoryText(actName, section) : Promise.resolve(null),
+    // Parsed straight out of India Code's footnotes: complete, verbatim by
+    // construction, and free. Only when an Act isn't in the snapshot do we
+    // fall back to asking the model to reconstruct a timeline from web
+    // commentary, which is what produced "one 2026 bill" for an Act amended
+    // every year since 1961.
+    fetchActAmendments(actName, section),
   ]);
 
   let statutoryText: string | null = null;
@@ -185,24 +192,42 @@ export async function POST(req: NextRequest) {
     interpretationResult = result;
   }
 
+  // The parsed statute-book record wins when we have it: it is complete and
+  // verbatim, where the model's reconstruction is whatever the web happened
+  // to mention. The model's version is kept only as a fallback for Acts
+  // missing from the India Code snapshot.
+  if (statuteAmendments.length > 0) {
+    interpretationResult = {
+      ...interpretationResult,
+      amendment_timeline: statuteAmendments.map((a) => ({
+        year: a.year,
+        event: a.event,
+        description: a.section ? `Section ${a.section}` : "",
+        supporting_quote: a.supporting_quote,
+        source_url: a.source_url,
+      })),
+    };
+  }
+
   const lastAmendmentYear =
     interpretationResult.amendment_timeline.length > 0
       ? Math.max(...interpretationResult.amendment_timeline.map((e) => e.year))
       : null;
 
-  let citationEdges: CitationEdge[] = [];
-  try {
-    citationEdges = await extractCitationEdges(interpretationResult.key_judgments, sources);
-  } catch (err) {
-    console.error("[api/check] Groq citation extraction failed, continuing without it:", err);
-  }
-
-  const conflicts = detectConflicts(interpretationResult.key_judgments, citationEdges);
+  // The citation graph is deliberately absent here and fetched separately by
+  // the client from /api/citations. Its Groq calls are throttled to 2 in
+  // flight by an 8,000 tokens/minute free tier and cost 5-15s, which pushed
+  // this route past the 60s serverless ceiling for the sake of its least
+  // essential output. Park the retrieved texts so that request can reuse them.
+  setCached(buildSourcesCacheKey(actName, section), {
+    sources,
+    judgments: interpretationResult.key_judgments,
+  });
 
   const response: CheckResponseBody = {
     ...interpretationResult,
-    citation_edges: citationEdges,
-    conflicts,
+    citation_edges: [],
+    conflicts: [],
     retrieved_source_count: sources.length,
     statutory_text: statutoryText,
     statutory_text_source: statutoryTextSource,

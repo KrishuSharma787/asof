@@ -9,11 +9,12 @@ import { tavily } from "@tavily/core";
 // searchIndianKanoon) rather than raising this alone, but the higher cap
 // also meaningfully broadens general coverage.
 //
-// Settled at 12 rather than 18: at 18 the synthesis prompt grew large enough
-// that Gemini 504'd on it repeatedly. Because the Supreme Court hits are
-// merged ahead of the general list, trimming the tail drops the least
-// authoritative results and keeps the recall fix intact.
-export const MAX_JUDGMENTS = 12;
+// Settled at 8: at 18 the synthesis prompt grew large enough that Gemini
+// 504'd on it repeatedly, and even 12 left a full lookup at ~67s, over the
+// 60s serverless ceiling. Because results are ranked by citation count and
+// Supreme Court hits are merged first, trimming the tail drops the least
+// authoritative results, not the landmark ones.
+export const MAX_JUDGMENTS = 8;
 
 export const TRUSTED_DOMAINS = [
   "indiankanoon.org",
@@ -105,6 +106,10 @@ interface IndianKanoonDocSummary {
   tid: number;
   title?: string;
   docsource?: string;
+  // How many later cases cite this one. Indian Kanoon returns it on the
+  // search response itself, so ranking by it costs nothing extra.
+  numcitedby?: number;
+  publishdate?: string;
 }
 
 async function ikSearch(
@@ -139,8 +144,14 @@ async function searchIndianKanoon(
   // scoped to doctypes:supremecourt (an IK query-string operator, not a URL
   // param) fills that gap; results are merged ahead of the general list so
   // top-court precedent is never squeezed out by cap slicing.
+  // doctypes:judgments restricts this to actual decisions. Without it the
+  // pool fills with bare statute pages ("Section 148 in The Income Tax Act,
+  // 1961"), which the citation ranking below then promotes to the very top --
+  // a statutory section is cited by thousands of cases, far more than any
+  // single judgment, so an Act-level query came back with eight statute pages
+  // and zero judgments.
   const [generalDocs, supremeCourtDocs] = await Promise.all([
-    ikSearch(apiKey, query),
+    ikSearch(apiKey, `${query} doctypes:judgments`),
     ikSearch(apiKey, `${query} doctypes:supremecourt`).catch(() => []),
   ]);
 
@@ -151,7 +162,17 @@ async function searchIndianKanoon(
     seenTids.add(doc.tid);
     mergedDocs.push(doc);
   }
-  const topDocs = mergedDocs.slice(0, MAX_JUDGMENTS);
+
+  // Rank by how often each judgment has been cited, not by search relevance.
+  // Relevance ranking skews recent -- it was returning 2023-2026 High Court
+  // FIR-quashing orders while omitting the cases that actually decided the
+  // provision. Citation count is the profession's own measure of which
+  // judgments matter, and it naturally favours landmark decisions across the
+  // Act's whole life rather than whatever was decided most recently
+  // (Surat Art Silk, 1979, carries 2,322 citing cases).
+  const topDocs = [...mergedDocs]
+    .sort((a, b) => (b.numcitedby ?? 0) - (a.numcitedby ?? 0))
+    .slice(0, MAX_JUDGMENTS);
 
   // Fetched in batches rather than all at once: firing 18 document requests
   // at Indian Kanoon simultaneously started tripping the per-request timeout,

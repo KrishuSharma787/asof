@@ -9,6 +9,12 @@ import { ConflictBanner } from "@/components/ConflictBanner";
 import { StatutoryText } from "@/components/StatutoryText";
 import { AmendmentTimeline } from "@/components/AmendmentTimeline";
 import type { CheckResponseBody } from "@/app/api/check/route";
+import type { CitationsResponseBody } from "@/app/api/citations/route";
+
+type CitationState =
+  | { phase: "idle" }
+  | { phase: "loading" }
+  | { phase: "done"; data: CitationsResponseBody };
 
 type RequestState =
   | { phase: "idle" }
@@ -18,9 +24,11 @@ type RequestState =
 
 export default function Home() {
   const [state, setState] = useState<RequestState>({ phase: "idle" });
+  const [citations, setCitations] = useState<CitationState>({ phase: "idle" });
 
   async function handleSubmit(actName: string, section: string | null) {
     setState({ phase: "loading", actName, section });
+    setCitations({ phase: "idle" });
     try {
       const res = await fetch("/api/check", {
         method: "POST",
@@ -35,7 +43,24 @@ export default function Home() {
         });
         return;
       }
-      setState({ phase: "success", data: json as CheckResponseBody });
+      const data = json as CheckResponseBody;
+      setState({ phase: "success", data });
+
+      // The citation graph arrives separately so its rate-limited Groq calls
+      // don't hold up everything else. Failure here is silent on purpose: the
+      // graph is supplementary, and the answer above it is already correct.
+      setCitations({ phase: "loading" });
+      try {
+        const edgeRes = await fetch("/api/citations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ actName, section }),
+        });
+        if (!edgeRes.ok) throw new Error("citations unavailable");
+        setCitations({ phase: "done", data: (await edgeRes.json()) as CitationsResponseBody });
+      } catch {
+        setCitations({ phase: "done", data: { citation_edges: [], conflicts: [] } });
+      }
     } catch {
       setState({
         phase: "error",
@@ -74,7 +99,7 @@ export default function Home() {
       {state.phase === "success" && (
         <div>
           <StatusCard result={state.data} />
-          <ConflictBanner conflicts={state.data.conflicts} />
+          <ConflictBanner conflicts={citations.phase === "done" ? citations.data.conflicts : []} />
           {state.data.statutory_text && state.data.statutory_text_source && (
             <StatutoryText
               text={state.data.statutory_text}
@@ -83,12 +108,19 @@ export default function Home() {
               highlights={state.data.highlighted_phrases}
             />
           )}
-          <AmendmentTimeline entries={state.data.amendment_timeline} />
+          <AmendmentTimeline
+            entries={state.data.amendment_timeline}
+            judgments={state.data.key_judgments}
+          />
           <JudgmentList
             judgments={state.data.key_judgments}
             lastAmendmentYear={state.data.last_amendment_year}
           />
-          <CitationGraph edges={state.data.citation_edges} />
+          {citations.phase === "loading" ? (
+            <p className="mt-6 text-body-sm text-steel">Working out how these judgments cite each other…</p>
+          ) : citations.phase === "done" ? (
+            <CitationGraph edges={citations.data.citation_edges} />
+          ) : null}
         </div>
       )}
     </main>

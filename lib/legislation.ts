@@ -114,6 +114,156 @@ async function loadRows(): Promise<LegislationRow[] | null> {
   return loadInFlight;
 }
 
+// India Code text ships wrapped in apparatus that is not part of the law:
+// a metadata banner ("Act: ... | India | Central | In Force"), numbered
+// footnote markers splicing amended words into the provision ("the
+// 2[Assessing Officer]"), and the footnote definitions themselves. The user
+// asked for the section "exactly as in the law", and that banner is also the
+// stale line the model once cited as proof an Act was in force -- so it is
+// stripped before the text is shown, quoted, or matched against.
+export function cleanStatutoryText(raw: string, sectionNumber: string): string {
+  let text = raw;
+
+  const header = new RegExp(`^.*?\\bSection\\s+${sectionNumber.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*`, "is");
+  text = text.replace(header, "");
+  // Fall back to cutting at the banner's last pipe if the section label is
+  // formatted unusually, so we never leave the "| In Force" line in place.
+  if (/\|\s*(In Force|Repealed)\b/i.test(text)) {
+    text = text.replace(/^[\s\S]*?\|\s*(?:In Force|Repealed)\b[^\n]*/i, "");
+  }
+
+  text = text
+    // footnote definitions: "> 3. Subs. by Act 3 of 1989, s. 23, for ... ."
+    .replace(/>\s*\d+\.\s*(?:Subs|Ins|Omitted|Added|Substituted|Inserted|Renumbered)\.?\s+by[^\n]*/gi, " ")
+    // inline markers that splice amended wording in: "the 2[Assessing Officer]"
+    .replace(/\b\d+\s*\*{0,2}\[\*{0,2}/g, "")
+    .replace(/\]/g, "")
+    .replace(/\*{2,}/g, "")
+    // leftover markdown blockquote markers from the PDF-to-text conversion
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*\n\s*/g, "\n\n")
+    .trim();
+
+  // India Code states the section heading, then immediately restates it in
+  // numbered form ("Income escaping assessment. —If... \n 147. Income
+  // escaping assessment. —If..."). Keep the numbered copy, which is the one
+  // that continues into the actual provision.
+  const numbered = new RegExp(
+    `(^|\\n)\\s*${sectionNumber.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\s*\\.`,
+  );
+  const match = numbered.exec(text);
+  if (match && match.index > 0) {
+    const before = text.slice(0, match.index).replace(/\s+/g, " ").trim();
+    const after = text.slice(match.index).replace(/\s+/g, " ").trim();
+    if (before.length > 20 && after.includes(before.slice(0, Math.min(before.length, 60)))) {
+      text = text.slice(match.index).trimStart();
+    }
+  }
+
+  return text;
+}
+
+export interface ExtractedAmendment {
+  year: number;
+  event: string;
+  supporting_quote: string;
+  source_url: string;
+  section: string | null;
+}
+
+// India Code's footnotes are the authoritative amendment record and they are
+// rigidly formatted -- "Subs. by Act 3 of 1989, s. 23, for ... (w.e.f.
+// 1-4-1989)". That means they can be parsed exactly rather than handed to a
+// model to summarise, which matters three ways: the timeline is complete
+// instead of whatever an LLM happened to notice, every entry is verbatim by
+// construction so it passes quote-verification automatically, and it costs
+// no tokens against a 20-requests/day quota.
+const AMENDMENT_PATTERN =
+  /\b(Subs|Ins|Omitted|Added|Substituted|Inserted|Renumbered)\.?\s+by\s+(?:the\s+)?(?:Act\s+)?([\w.\s()]{0,40}?\b\d+\s+of\s+(\d{4}))([^.]{0,120}?)(?:\(w\.e\.f\.\s*([\d.\-/]+)\s*\))?[.;]/gi;
+
+const VERB_LABEL: Record<string, string> = {
+  subs: "Substituted",
+  substituted: "Substituted",
+  ins: "Inserted",
+  inserted: "Inserted",
+  added: "Added",
+  omitted: "Omitted",
+  renumbered: "Renumbered",
+};
+
+function yearFromWef(wef: string | undefined, fallback: number): number {
+  if (!wef) return fallback;
+  const m = wef.match(/(\d{4})/);
+  return m ? Number(m[1]) : fallback;
+}
+
+function parseAmendments(
+  text: string,
+  sourceUrl: string,
+  section: string | null,
+): ExtractedAmendment[] {
+  const out: ExtractedAmendment[] = [];
+  for (const m of text.matchAll(AMENDMENT_PATTERN)) {
+    const [full, verb, amendingAct, actYear, , wef] = m;
+    const enactedYear = Number(actYear);
+    if (!Number.isFinite(enactedYear) || enactedYear < 1800 || enactedYear > 2100) continue;
+    const label = VERB_LABEL[verb.toLowerCase().replace(".", "")] ?? "Amended";
+    out.push({
+      // The commencement date is when the change took effect; the amending
+      // Act's own year is the fallback when no w.e.f. is stated.
+      year: yearFromWef(wef, enactedYear),
+      event: `${label} by ${amendingAct.trim().replace(/\s+/g, " ")}`,
+      supporting_quote: full.trim(),
+      source_url: sourceUrl,
+      section,
+    });
+  }
+  return out;
+}
+
+// Whole-Act history: every section of the Act is already in memory, so the
+// footnotes across all of them add up to the Act's real amendment record.
+// This is what makes an Act-level query (no section given) substantive
+// instead of returning a single recent bill scraped off a blog.
+export async function fetchActAmendments(
+  actName: string,
+  section: string | null = null,
+): Promise<ExtractedAmendment[]> {
+  const rows = await loadRows();
+  if (!rows) return [];
+
+  const targetAct = normalizeActName(actName.split(",")[0]);
+  const targetSection = section ? normalizeSection(section) : null;
+
+  const relevant = rows.filter((row) => {
+    if (!row.text || !row.source_url) return false;
+    if (!normalizeActName(row.title ?? "").includes(targetAct)) return false;
+    if (targetSection && normalizeSection(row.section_number ?? "") !== targetSection) return false;
+    return true;
+  });
+  if (relevant.length === 0) return [];
+
+  const shortestTitle = relevant
+    .map((r) => r.title ?? "")
+    .sort((a, b) => a.length - b.length)[0];
+
+  const amendments = relevant
+    .filter((r) => (r.title ?? "") === shortestTitle)
+    .flatMap((r) => parseAmendments(r.text!, r.source_url!, r.section_number ?? null));
+
+  // One amending Act usually touches many sections, each with its own
+  // footnote. Collapse to one entry per (year, amending Act) so the timeline
+  // reads as legislative events rather than hundreds of near-duplicates.
+  const byEvent = new Map<string, ExtractedAmendment>();
+  for (const a of amendments) {
+    const key = `${a.year}::${a.event}`;
+    if (!byEvent.has(key)) byEvent.set(key, a);
+  }
+
+  return [...byEvent.values()].sort((a, b) => a.year - b.year);
+}
+
 function normalizeSection(section: string): string {
   return section.trim().toLowerCase().replace(/^section\s+/, "").replace(/[.\s]/g, "");
 }
@@ -162,8 +312,33 @@ export async function fetchStatutoryText(
     .sort((a, b) => (a.chunk_id ?? "").localeCompare(b.chunk_id ?? "", undefined, { numeric: true }));
 
   const first = chunks[0];
+  const sectionNumber = first.section_number ?? section;
+
+  // Chunks overlap -- a short lead-in chunk is often wholly contained in the
+  // next one -- so joining them blindly prints the provision twice.
+  // Every chunk of a section repeats the section's opening line as context
+  // ("Income escaping assessment. —If the Assessing Officer..."), so joining
+  // them verbatim prints that line once per chunk. Strip it everywhere it
+  // recurs as a prefix, keeping only the copy that leads the section.
+  const cleaned = chunks
+    .map((c) => cleanStatutoryText(c.text!, sectionNumber))
+    .filter((t) => t.length > 0);
+
+  const repeatedHeader = cleaned[0]?.split("\n")[0]?.trim() ?? "";
+  const recurs =
+    repeatedHeader.length > 20 &&
+    cleaned.filter((c) => c.trimStart().startsWith(repeatedHeader)).length > 1;
+
+  const cleanedChunks = cleaned.map((chunk, i) => {
+    if (!recurs || i === 0) return chunk;
+    const trimmed = chunk.trimStart();
+    return trimmed.startsWith(repeatedHeader)
+      ? trimmed.slice(repeatedHeader.length).trimStart()
+      : chunk;
+  });
+
   return {
-    text: chunks.map((c) => c.text!).join("\n\n"),
+    text: cleanedChunks.join("\n\n"),
     title: first.title ?? actName,
     sectionNumber: first.section_number ?? section,
     sourceUrl: first.source_url!,
