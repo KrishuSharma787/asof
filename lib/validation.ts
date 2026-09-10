@@ -10,7 +10,7 @@ export interface ValidationOutcome {
 // Straight-quote/whitespace normalization only: Gemini's natural-language
 // output can render ASCII quotes as curly ones even when copying verbatim,
 // which would otherwise cause a false-negative on a genuinely exact quote.
-function normalizeForMatch(text: string): string {
+export function normalizeForMatch(text: string): string {
   return text
     .replace(/[‘’]/g, "'")
     .replace(/[“”]/g, '"')
