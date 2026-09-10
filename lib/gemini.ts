@@ -14,7 +14,26 @@ import { actNameWithoutYear } from "./actName";
 // quota, then 3.8-flash returned 503 "experiencing high demand". Falling
 // across models turns either into a slower answer instead of no answer.
 // Still a stopgap -- enabling billing removes the daily cap entirely.
-const MODELS = ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash"] as const;
+//
+// Widened after the original 3-model list all failed together: confirmed
+// live that 3.7/3.8/3.5-flash can be down simultaneously (identical 503/503
+// /504 across two unrelated queries run back to back), while the -lite and
+// -latest variants answered in under 2s at the same moment -- a different
+// deployment, evidently not sharing the same capacity pool. Lite models are
+// weaker at grounding, but that's a quality floor our validator already
+// enforces independently of which model produced the output: a weaker model
+// just has more of its claims dropped, not wrong ones surviving. Ending on
+// gemini-flash-latest (an alias Google keeps pointed at a current model) as
+// a last resort against future renames -- confirmed 2.5-flash and 2.5-pro
+// were already fully retired within two model generations of 3.6.
+const MODELS = [
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-flash-lite-latest",
+  "gemini-flash-latest",
+] as const;
 // Trimmed from an original 20000 now that retrieval sends more sources per
 // request (MAX_JUDGMENTS 10->18, AMENDMENT_SOURCE_CAP 5->8): the relevant
 // interpretive passage is usually a fraction of a full judgment, so this
@@ -32,8 +51,12 @@ const EXCERPT_CHAR_LIMIT = 3500;
 // in the prompt, sending four full Acts alongside them pushed Gemini past its
 // own deadline and 504'd both attempts.
 const STATUTE_BOOK_CHAR_LIMIT = 2500;
-const RETRY_BACKOFF_MS = 2000;
-const REQUEST_TIMEOUT_MS = 40000;
+// Reduced from an original 40000: with 6 models now in the fallback chain, a
+// single hanging model at 40s could eat most of the 60s route budget on its
+// own. 20s is still generous against the ~2s responses seen from healthy
+// models, and a model that hasn't answered in 20s is not one worth waiting
+// out further when 5 others are queued behind it.
+const REQUEST_TIMEOUT_MS = 20000;
 
 const RESPONSE_JSON_SCHEMA = z.toJSONSchema(InterpretationResultSchema);
 
@@ -207,6 +230,9 @@ export async function synthesizeInterpretation(
     statuteBookSources,
     statutoryText,
   );
+  console.error(
+    `[gemini] prompt chars: ${userPrompt.length} (statuteBook=${statuteBookSources.length} judgments=${sources.length} amendments=${amendmentSources.length})`,
+  );
 
   const call = (model: string) =>
     ai.models.generateContent({
@@ -233,11 +259,12 @@ export async function synthesizeInterpretation(
       lastKind = classifyFailure(err);
       lastMessage = String((err as Error).message);
       console.error(`[gemini] ${model} failed (${lastKind}), trying next model:`, lastMessage.slice(0, 200));
-      // A quota wall won't clear by waiting, so move straight to the next
-      // model. A transient spike might, so give it a moment first.
-      if (lastKind !== "quota") {
-        await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
-      }
+      // No backoff before moving to the next model: it's a different
+      // deployment with its own capacity, not affected by the one that just
+      // failed, so waiting here only spends time from a 60s route budget
+      // that up to 5 more attempts still need. A backoff made sense for the
+      // old design (retry the *same* model after a spike); it doesn't for
+      // switching to a different one.
     }
   }
 
