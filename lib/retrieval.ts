@@ -1,6 +1,14 @@
 import { tavily } from "@tavily/core";
 
-export const MAX_JUDGMENTS = 10;
+// Raised from an original 10: live testing found Indian Kanoon reports
+// hundreds of matches for well-litigated sections (674 for Section 66A of
+// the IT Act) and its default relevance ranking doesn't reliably surface the
+// single most important judgment -- Shreya Singhal v. Union of India, the
+// case that struck the section down, never appeared in the first 20 general
+// results. Fixed by merging in a doctypes:supremecourt-biased search (see
+// searchIndianKanoon) rather than raising this alone, but the higher cap
+// also meaningfully broadens general coverage.
+export const MAX_JUDGMENTS = 18;
 
 export const TRUSTED_DOMAINS = [
   "indiankanoon.org",
@@ -76,14 +84,10 @@ interface IndianKanoonDocSummary {
   docsource?: string;
 }
 
-async function searchIndianKanoon(
-  actName: string,
-  section: string | null,
-): Promise<RetrievedJudgment[]> {
-  const apiKey = process.env.INDIANKANOON_API_KEY;
-  if (!apiKey) throw new Error("INDIANKANOON_API_KEY not set");
-
-  const query = buildQuery(actName, section);
+async function ikSearch(
+  apiKey: string,
+  query: string,
+): Promise<IndianKanoonDocSummary[]> {
   const searchUrl = `https://api.indiankanoon.org/search/?formInput=${encodeURIComponent(query)}&pagenum=0`;
   const searchRes = await fetchWithTimeout(searchUrl, {
     method: "POST",
@@ -93,8 +97,38 @@ async function searchIndianKanoon(
     throw new Error(`Indian Kanoon search failed: ${searchRes.status} ${searchRes.statusText}`);
   }
   const searchJson = await searchRes.json();
-  const docs: IndianKanoonDocSummary[] = Array.isArray(searchJson?.docs) ? searchJson.docs : [];
-  const topDocs = docs.slice(0, MAX_JUDGMENTS);
+  return Array.isArray(searchJson?.docs) ? searchJson.docs : [];
+}
+
+async function searchIndianKanoon(
+  actName: string,
+  section: string | null,
+): Promise<RetrievedJudgment[]> {
+  const apiKey = process.env.INDIANKANOON_API_KEY;
+  if (!apiKey) throw new Error("INDIANKANOON_API_KEY not set");
+
+  const query = buildQuery(actName, section);
+
+  // Indian Kanoon's default relevance ranking doesn't reliably surface the
+  // single most authoritative judgment on a provision (confirmed live:
+  // Shreya Singhal v. Union of India, the case that struck down Section 66A,
+  // never appeared in the general query's results at all). A second search
+  // scoped to doctypes:supremecourt (an IK query-string operator, not a URL
+  // param) fills that gap; results are merged ahead of the general list so
+  // top-court precedent is never squeezed out by cap slicing.
+  const [generalDocs, supremeCourtDocs] = await Promise.all([
+    ikSearch(apiKey, query),
+    ikSearch(apiKey, `${query} doctypes:supremecourt`).catch(() => []),
+  ]);
+
+  const seenTids = new Set<number>();
+  const mergedDocs: IndianKanoonDocSummary[] = [];
+  for (const doc of [...supremeCourtDocs, ...generalDocs]) {
+    if (seenTids.has(doc.tid)) continue;
+    seenTids.add(doc.tid);
+    mergedDocs.push(doc);
+  }
+  const topDocs = mergedDocs.slice(0, MAX_JUDGMENTS);
 
   const fullDocs = await Promise.all(
     topDocs.map(async (doc): Promise<RetrievedJudgment | null> => {
@@ -126,7 +160,7 @@ async function searchIndianKanoon(
 }
 
 async function tavilySearch(
-  query: string,
+  queryOrQueries: string | string[],
   domains: string[],
   cap: number,
 ): Promise<RetrievedJudgment[]> {
@@ -134,17 +168,23 @@ async function tavilySearch(
   if (!apiKey) throw new Error("TAVILY_API_KEY not set");
 
   const client = tavily({ apiKey });
-  const response = await client.search(query, {
-    searchDepth: "advanced",
-    maxResults: cap,
-    includeDomains: domains,
-    includeDomainsMode: "filter",
-    includeRawContent: "text",
-  });
+  const queries = Array.isArray(queryOrQueries) ? queryOrQueries : [queryOrQueries];
+  const responses = await Promise.all(
+    queries.map((query) =>
+      client.search(query, {
+        searchDepth: "advanced",
+        maxResults: cap,
+        includeDomains: domains,
+        includeDomainsMode: "filter",
+        includeRawContent: "text",
+      }),
+    ),
+  );
+  const allResults = responses.flatMap((r) => r.results);
 
   // Belt-and-suspenders: enforce the trusted-domain scope in code even though
   // includeDomainsMode: "filter" already asks Tavily to do it server-side.
-  const scoped = response.results.filter((r) =>
+  const scoped = allResults.filter((r) =>
     domains.some((domain) => safeHostname(r.url).endsWith(domain)),
   );
 
@@ -203,7 +243,12 @@ function safeHostname(url: string): string {
   }
 }
 
-export const AMENDMENT_SOURCE_CAP = 5;
+// Raised from an original 5 alongside MAX_JUDGMENTS for the same reason:
+// live testing found the amendment timeline came back with only a single
+// entry (the 2009 insertion of Section 66A) when the Act's real history
+// includes its 2000 enactment and other amendments -- a thin source pool,
+// not a synthesis failure.
+export const AMENDMENT_SOURCE_CAP = 8;
 
 const AMENDMENT_TRUSTED_DOMAINS = [
   "indiacode.nic.in",
@@ -218,12 +263,22 @@ export async function retrieveAmendmentHistory(
 ): Promise<RetrievedJudgment[]> {
   const actName = sanitizeInput(rawActName);
   const section = rawSection ? sanitizeInput(rawSection) : null;
-  const query = section
-    ? `${actName} Section ${section} amendment history`
-    : `${actName} amendment history legislative`;
+
+  // Two queries, merged: a section-specific one (finds section-level
+  // commentary, e.g. PRS India background pieces) and an Act-level one
+  // (finds India Code's own Act/amendment pages) -- confirmed live that
+  // the section-specific query alone misses India Code's official
+  // "<Act> Amendment" page entirely, since it's the Act-level query that
+  // surfaces it.
+  const queries = [
+    section
+      ? `${actName} Section ${section} enactment amendment history`
+      : `${actName} enactment amendment history legislative`,
+    `${actName} amendment history India Code`,
+  ];
 
   try {
-    return await tavilySearch(query, AMENDMENT_TRUSTED_DOMAINS, AMENDMENT_SOURCE_CAP);
+    return await tavilySearch(queries, AMENDMENT_TRUSTED_DOMAINS, AMENDMENT_SOURCE_CAP);
   } catch (err) {
     console.error("[retrieval] amendment-history search failed:", err);
     return [];

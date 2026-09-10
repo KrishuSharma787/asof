@@ -4,7 +4,12 @@ import { InterpretationResultSchema } from "../types/schema";
 import type { RetrievedJudgment } from "./retrieval";
 
 const MODEL = "gemini-3.6-flash";
-const EXCERPT_CHAR_LIMIT = 20000;
+// Trimmed from an original 20000 now that retrieval sends more sources per
+// request (MAX_JUDGMENTS 10->18, AMENDMENT_SOURCE_CAP 5->8): the relevant
+// interpretive passage is usually a fraction of a full judgment, so this
+// trades a smaller amount of per-document depth for meaningfully broader
+// coverage within a similar total prompt size.
+const EXCERPT_CHAR_LIMIT = 12000;
 const REQUEST_TIMEOUT_MS = 30000;
 
 const RESPONSE_JSON_SCHEMA = z.toJSONSchema(InterpretationResultSchema);
