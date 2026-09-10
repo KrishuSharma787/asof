@@ -162,6 +162,15 @@ export function cleanStatutoryText(raw: string, sectionNumber: string): string {
     // carries ("## STATE AMENDMENTS", "## Andhra Pradesh"): keep the label,
     // drop the "#" markers, which our plain-text rendering can't interpret
     .replace(/^#{1,6}\s*/gm, "")
+    // leftover markdown italic underscores from the PDF-to-text conversion:
+    // the source wraps clause labels and citation terms in italics, which
+    // renders as raw litter once flattened to plain text -- "( _1_ )",
+    // "( _a_ )", "_Vide_" -- reported live as unprofessional. Keep the text
+    // the italics were wrapping, drop the underscores.
+    .replace(/_+([^_\n]+?)_+/g, "$1")
+    // tighten the space the italics left behind inside short parenthetical
+    // labels: "( 1 )" -> "(1)", "( a )" -> "(a)"
+    .replace(/\(\s+([a-zA-Z0-9]{1,4})\s+\)/g, "($1)")
     .replace(/[ \t]+/g, " ")
     .replace(/\s*\n\s*\n\s*/g, "\n\n")
     .trim();
