@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# downloaded legislation snapshot (fetched at runtime, see lib/legislation.ts)
+/.cache
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

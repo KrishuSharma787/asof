@@ -285,13 +285,69 @@ export async function retrieveAmendmentHistory(
   }
 }
 
+export const STATUTE_BOOK_CAP = 4;
+
+// Force status has to be checked against the statute book, not inferred from
+// judgments. Nothing in the judgment corpus tells you an Act was repealed by
+// a later Act -- the Income-tax Act, 1961 was reported "in force" here long
+// after s.536 of the Income Tax Act, 2025 repealed it, because no retrieved
+// judgment happened to mention it.
+//
+// IK's doctypes:laws searches the bare statute book, and a repealing
+// provision states it in quotable terms ("The Income-tax Act, 1961 is hereby
+// repealed"), which feeds our verbatim-quote validator directly. Verified
+// discriminating: this returns the repealing provision as the top hit for
+// the 1961 Act, and only unrelated noise for an Act that is still live.
+export async function retrieveStatuteBook(
+  rawActName: string,
+): Promise<RetrievedJudgment[]> {
+  const apiKey = process.env.INDIANKANOON_API_KEY;
+  if (!apiKey) return [];
+
+  const actName = sanitizeInput(rawActName);
+
+  try {
+    const docs = await ikSearch(apiKey, `"${actName}" "hereby repealed" doctypes:laws`);
+    const topDocs = docs.slice(0, STATUTE_BOOK_CAP);
+
+    const fetched = await Promise.all(
+      topDocs.map(async (doc): Promise<RetrievedJudgment | null> => {
+        try {
+          const docRes = await fetchWithTimeout(`https://api.indiankanoon.org/doc/${doc.tid}/`, {
+            method: "POST",
+            headers: { Authorization: `Token ${apiKey}` },
+          });
+          if (!docRes.ok) return null;
+          const docJson = await docRes.json();
+          const text = stripHtml(typeof docJson?.doc === "string" ? docJson.doc : "");
+          if (!text) return null;
+          return {
+            title: docJson?.title ?? doc.title ?? "Untitled provision",
+            court: docJson?.docsource ?? doc.docsource ?? "Statute book",
+            url: `https://indiankanoon.org/doc/${doc.tid}/`,
+            text,
+            source: "indiankanoon",
+          };
+        } catch {
+          return null;
+        }
+      }),
+    );
+
+    return fetched.filter((d): d is RetrievedJudgment => d !== null);
+  } catch (err) {
+    console.error("[retrieval] statute-book check failed:", err);
+    return [];
+  }
+}
+
 export interface StatutoryTextResult {
   text: string;
   court: string;
   url: string;
 }
 
-// Heuristic fallback used only when lib/vaquill.ts can't resolve the section
+// Heuristic fallback used only when lib/legislation.ts can't resolve the section
 // (no token, no match, etc.): Indian Kanoon's phrase search on `"<act>" <section>`
 // reliably surfaces the bare section-text document (title pattern
 // "Section X in The Y Act, YYYY") as a top hit — confirmed empirically during

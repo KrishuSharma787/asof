@@ -3,7 +3,12 @@ import type { Confidence, InterpretationResult, Status } from "@/types/schema";
 interface StatusCardProps {
   result: Pick<
     InterpretationResult,
-    "act_name" | "section" | "status" | "current_force_status_explanation" | "confidence"
+    | "act_name"
+    | "section"
+    | "status"
+    | "status_evidence"
+    | "current_force_status_explanation"
+    | "confidence"
   >;
 }
 
@@ -13,14 +18,16 @@ const STATUS_LABEL: Record<Status, string> = {
   struck_down: "Struck down",
   read_down: "Read down",
   omitted: "Omitted",
+  unverified: "Status not verified",
 };
 
 const STATUS_STYLE: Record<Status, string> = {
-  in_force: "bg-surface text-steel",
-  repealed: "bg-surface text-steel",
+  in_force: "bg-accent-green/10 text-accent-green",
+  repealed: "bg-accent-red/10 text-accent-red",
   omitted: "bg-surface text-steel",
   read_down: "bg-accent-amber/10 text-accent-amber",
   struck_down: "bg-accent-red/10 text-accent-red",
+  unverified: "bg-surface text-steel",
 };
 
 const CONFIDENCE_LABEL: Record<Confidence, string> = {
@@ -65,6 +72,27 @@ export function StatusCard({ result }: StatusCardProps) {
       <p className="mt-3 max-w-[70ch] text-body-sm text-steel">
         {result.current_force_status_explanation}
       </p>
+
+      {result.status_evidence ? (
+        <>
+          <blockquote className="mt-3 max-w-[70ch] rounded-sm border border-hairline bg-surface px-3 py-2 font-mono text-code-sm text-charcoal">
+            &ldquo;{result.status_evidence.supporting_quote}&rdquo;
+          </blockquote>
+          <a
+            href={result.status_evidence.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 inline-block text-body-sm font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-ink"
+          >
+            Status source
+          </a>
+        </>
+      ) : (
+        <p className="mt-3 max-w-[70ch] text-caption text-steel">
+          No source in this search positively confirmed the provision&apos;s current force status.
+          Absence of a repeal here is not confirmation that it is in force.
+        </p>
+      )}
     </section>
   );
 }

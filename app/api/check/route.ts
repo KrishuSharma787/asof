@@ -3,9 +3,10 @@ import {
   retrieveJudgments,
   retrieveAmendmentHistory,
   retrieveStatutoryTextFallback,
+  retrieveStatuteBook,
   type RetrievedJudgment,
 } from "@/lib/retrieval";
-import { fetchStatutoryText } from "@/lib/vaquill";
+import { fetchStatutoryText } from "@/lib/legislation";
 import { synthesizeInterpretation } from "@/lib/gemini";
 import { validateInterpretationResult } from "@/lib/validation";
 import { extractCitationEdges, type CitationEdge } from "@/lib/groq";
@@ -16,13 +17,15 @@ import type { InterpretationResult } from "@/types/schema";
 // Retrieval + 1 Gemini call (with 1 retry) + up to 45 Groq calls can, in the
 // worst case, run past Vercel's default serverless timeout — extend it.
 // Each upstream call still has its own bounded timeout (see lib/retrieval.ts,
-// lib/gemini.ts, lib/groq.ts, lib/vaquill.ts), so this is a ceiling, not a
+// lib/gemini.ts, lib/groq.ts, lib/legislation.ts), so this is a ceiling, not a
 // substitute for those.
 export const maxDuration = 60;
 
-// Bump whenever CheckResponseBody's shape changes, so a stale cache entry
-// from before the change is never served to a client expecting new fields.
-const RESPONSE_SCHEMA_VERSION = "4";
+// Bump whenever CheckResponseBody's shape OR the synthesis rules that produce
+// it change, so a stale entry from before the change is never served. Cached
+// answers are as version-bound as the schema: a prompt fix that corrects a
+// wrong status is worthless if yesterday's wrong answer is still served.
+const RESPONSE_SCHEMA_VERSION = "6";
 
 interface CheckRequestBody {
   actName?: unknown;
@@ -34,7 +37,7 @@ export interface CheckResponseBody extends InterpretationResult {
   conflicts: ConflictEntry[];
   retrieved_source_count: number;
   statutory_text: string | null;
-  statutory_text_source: "vaquill" | "indiankanoon" | null;
+  statutory_text_source: "india_code" | "indiankanoon" | null;
   statutory_text_source_url: string | null;
   last_amendment_year: number | null;
 }
@@ -43,9 +46,13 @@ function buildEmptyResult(actName: string, section: string | null): Interpretati
   return {
     act_name: actName,
     section,
-    status: "in_force",
+    // Not "in_force": with nothing retrieved we have not established anything
+    // about this Act's status, and saying "in force" here is what produced a
+    // confidently wrong answer about a repealed Act.
+    status: "unverified",
+    status_evidence: null,
     current_force_status_explanation:
-      "No judgments or amendment history discussing this Act/section were found in the retrieved sources.",
+      "No judgments, statute-book entries, or amendment history for this Act/section were found in the retrieved sources, so its current force status could not be verified.",
     key_judgments: [],
     highlighted_phrases: [],
     amendment_timeline: [],
@@ -77,29 +84,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(cached);
   }
 
-  const [sources, amendmentSources, vaquillResult] = await Promise.all([
+  const [sources, amendmentSources, statuteBookSources, indiaCodeSection] = await Promise.all([
     retrieveJudgments(actName, section).catch((err): RetrievedJudgment[] => {
       console.error("[api/check] retrieval failed unexpectedly:", err);
       return [];
     }),
     retrieveAmendmentHistory(actName, section),
+    retrieveStatuteBook(actName),
     section ? fetchStatutoryText(actName, section) : Promise.resolve(null),
   ]);
 
   let statutoryText: string | null = null;
-  let statutoryTextSource: "vaquill" | "indiankanoon" | null = null;
+  let statutoryTextSource: "india_code" | "indiankanoon" | null = null;
   let statutoryTextSourceUrl: string | null = null;
-  let vaquillAnchor: { enactmentYear: number | null; amendmentCount: number | null } | null = null;
 
   if (section) {
-    if (vaquillResult) {
-      statutoryText = vaquillResult.text;
-      statutoryTextSource = "vaquill";
-      statutoryTextSourceUrl = vaquillResult.sourceUrl;
-      vaquillAnchor = {
-        enactmentYear: vaquillResult.enactmentYear,
-        amendmentCount: vaquillResult.amendmentCount,
-      };
+    if (indiaCodeSection) {
+      statutoryText = indiaCodeSection.text;
+      statutoryTextSource = "india_code";
+      statutoryTextSourceUrl = indiaCodeSection.sourceUrl;
     } else {
       const fallback = await retrieveStatutoryTextFallback(actName, section);
       if (fallback) {
@@ -111,7 +114,7 @@ export async function POST(req: NextRequest) {
   }
 
   let interpretationResult: InterpretationResult;
-  if (sources.length === 0 && amendmentSources.length === 0) {
+  if (sources.length === 0 && amendmentSources.length === 0 && statuteBookSources.length === 0) {
     interpretationResult = buildEmptyResult(actName, section);
   } else {
     let rawSynthesis: unknown;
@@ -121,8 +124,10 @@ export async function POST(req: NextRequest) {
         section,
         sources,
         amendmentSources,
-        statutoryText,
-        vaquillAnchor,
+        statuteBookSources,
+        statutoryText && statutoryTextSourceUrl
+          ? { text: statutoryText, sourceUrl: statutoryTextSourceUrl }
+          : null,
       );
     } catch (err) {
       console.error("[api/check] Gemini synthesis failed:", err);
@@ -137,8 +142,15 @@ export async function POST(req: NextRequest) {
       droppedJudgments,
       droppedHighlights,
       droppedTimelineEntries,
+      statusDowngraded,
       errors,
-    } = validateInterpretationResult(rawSynthesis, sources, amendmentSources, statutoryText);
+    } = validateInterpretationResult(
+      rawSynthesis,
+      sources,
+      amendmentSources,
+      statutoryText,
+      statuteBookSources,
+    );
     if (!result) {
       console.error("[api/check] Gemini output failed schema validation:", errors);
       return NextResponse.json(
@@ -154,6 +166,9 @@ export async function POST(req: NextRequest) {
     }
     if (droppedTimelineEntries > 0) {
       console.warn(`[api/check] dropped ${droppedTimelineEntries} timeline entries failing quote verification`);
+    }
+    if (statusDowngraded) {
+      console.warn("[api/check] status downgraded to unverified: evidence quote not found in any retrieved source");
     }
     interpretationResult = result;
   }

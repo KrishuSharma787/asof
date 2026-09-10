@@ -6,6 +6,7 @@ export interface ValidationOutcome {
   droppedJudgments: string[];
   droppedHighlights: string[];
   droppedTimelineEntries: number;
+  statusDowngraded: boolean;
   errors: string[];
 }
 
@@ -25,6 +26,7 @@ export function validateInterpretationResult(
   sources: RetrievedJudgment[],
   amendmentSources: RetrievedJudgment[],
   statutoryText: string | null = null,
+  statuteBookSources: RetrievedJudgment[] = [],
 ): ValidationOutcome {
   const parsed = InterpretationResultSchema.safeParse(raw);
   if (!parsed.success) {
@@ -33,6 +35,7 @@ export function validateInterpretationResult(
       droppedJudgments: [],
       droppedHighlights: [],
       droppedTimelineEntries: 0,
+      statusDowngraded: false,
       errors: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
     };
   }
@@ -83,21 +86,50 @@ export function validateInterpretationResult(
   let droppedTimelineEntries = 0;
 
   const verifiedTimeline = parsed.data.amendment_timeline.filter((entry) => {
+    const normalizedQuote = normalizeForMatch(entry.supporting_quote);
+    // A timeline entry may be grounded either in an amendment-history source
+    // or in the statutory text's own India Code amendment footnotes, which
+    // are the authoritative record and carry the statutory text's URL.
     const source = amendmentSourceByUrl.get(entry.source_url);
-    if (!source) {
-      droppedTimelineEntries += 1;
-      return false;
-    }
-    if (!normalizeForMatch(source.text).includes(normalizeForMatch(entry.supporting_quote))) {
+    const groundedInSource =
+      !!source && normalizeForMatch(source.text).includes(normalizedQuote);
+    const groundedInStatute =
+      !!normalizedStatutoryText && normalizedStatutoryText.includes(normalizedQuote);
+
+    if (!groundedInSource && !groundedInStatute) {
       droppedTimelineEntries += 1;
       return false;
     }
     return true;
   });
 
+  // Status has to be backed by a verbatim quote from something we retrieved.
+  // If the evidence doesn't check out, the claim doesn't survive: we downgrade
+  // to "unverified" rather than letting an unsupported status through, which
+  // is exactly how "in force" got asserted about a repealed Act.
+  const statusSourceByUrl = new Map(
+    [...sources, ...amendmentSources, ...statuteBookSources].map((s) => [s.url, s]),
+  );
+  const evidence = parsed.data.status_evidence;
+  let statusEvidenceHolds = false;
+  if (evidence) {
+    const normalizedQuote = normalizeForMatch(evidence.supporting_quote);
+    const source = statusSourceByUrl.get(evidence.source_url);
+    statusEvidenceHolds =
+      (!!source && normalizeForMatch(source.text).includes(normalizedQuote)) ||
+      (!!normalizedStatutoryText && normalizedStatutoryText.includes(normalizedQuote));
+  }
+
+  const statusDowngraded = parsed.data.status !== "unverified" && !statusEvidenceHolds;
+
   return {
     result: {
       ...parsed.data,
+      status: statusDowngraded ? "unverified" : parsed.data.status,
+      status_evidence: statusEvidenceHolds ? evidence : null,
+      // An unverified status can't be reported at high confidence.
+      confidence:
+        statusDowngraded && parsed.data.confidence === "high" ? "medium" : parsed.data.confidence,
       key_judgments: verifiedJudgments,
       highlighted_phrases: verifiedHighlights,
       amendment_timeline: verifiedTimeline,
@@ -105,6 +137,7 @@ export function validateInterpretationResult(
     droppedJudgments,
     droppedHighlights,
     droppedTimelineEntries,
+    statusDowngraded,
     errors: [],
   };
 }

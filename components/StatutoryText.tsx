@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import type { HighlightedPhrase } from "@/types/schema";
-import { VAQUILL_SNAPSHOT_LABEL } from "@/lib/vaquill";
+import { LEGISLATION_SNAPSHOT_LABEL } from "@/lib/legislation-meta";
 
 interface StatutoryTextProps {
   text: string;
-  source: "vaquill" | "indiankanoon";
+  source: "india_code" | "indiankanoon";
   sourceUrl: string | null;
   highlights: HighlightedPhrase[];
 }
@@ -66,9 +66,9 @@ export function StatutoryText({ text, source, sourceUrl, highlights }: Statutory
         {renderHighlighted(text, matches)}
       </p>
 
-      {source === "vaquill" && (
+      {source === "india_code" && (
         <p className="mt-2 text-caption text-steel">
-          Sourced from a structured dataset snapshot ({VAQUILL_SNAPSHOT_LABEL}). Legislation
+          Sourced from a structured dataset snapshot ({LEGISLATION_SNAPSHOT_LABEL}). Legislation
           changes continuously — for the current official text,{" "}
           {sourceUrl ? (
             <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="underline">
