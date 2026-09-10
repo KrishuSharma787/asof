@@ -55,13 +55,19 @@ function renderHighlighted(text: string, matches: Match[]): ReactNode[] {
   matches.forEach((m, i) => {
     if (m.start > cursor) nodes.push(text.slice(cursor, m.start));
     nodes.push(
+      // The footnote number sits right after the phrase with no space --
+      // fine with superscript styling in the browser, but with it removed
+      // (a screen reader, or any tool that flattens the DOM to plain text)
+      // it reads as part of the last word: "...has not been paid1" observed
+      // live. Bracketing it keeps it legible either way.
       <a
         key={i}
         href={`#interpretation-note-${m.noteNumber}`}
         className="rounded-xs bg-accent-amber/15 px-0.5 text-ink no-underline"
       >
         {text.slice(m.start, m.end)}
-        <sup className="text-accent-amber">{m.noteNumber}</sup>
+        {" "}
+        <sup className="text-accent-amber">[{m.noteNumber}]</sup>
       </a>,
     );
     cursor = m.end;

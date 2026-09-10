@@ -25,7 +25,7 @@ export const maxDuration = 60;
 // it change, so a stale entry from before the change is never served. Cached
 // answers are as version-bound as the schema: a prompt fix that corrects a
 // wrong status is worthless if yesterday's wrong answer is still served.
-const RESPONSE_SCHEMA_VERSION = "15";
+const RESPONSE_SCHEMA_VERSION = "16";
 
 interface CheckRequestBody {
   actName?: unknown;

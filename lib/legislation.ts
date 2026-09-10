@@ -124,8 +124,20 @@ async function loadRows(): Promise<LegislationRow[] | null> {
 // stripped before the text is shown, quoted, or matched against.
 export function cleanStatutoryText(raw: string, sectionNumber: string): string {
   let text = raw;
+  const escapedSection = sectionNumber.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-  const header = new RegExp(`^.*?\\bSection\\s+${sectionNumber.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*`, "is");
+  // The banner runs "Act: <name> | India | Central | In Force" then
+  // "Chapter X: <name> | Section N: <the section's own descriptive title>",
+  // followed by a blank line before real content starts. This used to stop
+  // right after "Section N:", leaving that descriptive title -- sometimes a
+  // full sentence -- sitting at the top of the text. Because cleaning runs
+  // per chunk, an under-stripped banner repeated once per chunk: confirmed
+  // live as the section's own title recurring as clutter through a
+  // multi-chunk section (RFCTLARR s.24, 4 chunks, 4 copies of the leftover
+  // title interspersed with the actual amendment text). Consuming through
+  // the end of the "Section N:" line -- not just the colon -- removes the
+  // whole banner, including the earlier "In Force" line it's chained after.
+  const header = new RegExp(`^[\\s\\S]*?\\bSection\\s+${escapedSection}\\s*:[^\\n]*\\n+`, "i");
   text = text.replace(header, "");
   // Fall back to cutting at the banner's last pipe if the section label is
   // formatted unusually, so we never leave the "| In Force" line in place.
@@ -142,6 +154,14 @@ export function cleanStatutoryText(raw: string, sectionNumber: string): string {
     .replace(/\*{2,}/g, "")
     // leftover markdown blockquote markers from the PDF-to-text conversion
     .replace(/^\s*>\s?/gm, "")
+    // bare code-fence lines: an artifact of the PDF-to-text conversion (the
+    // source is legislative text, not code -- these mark a page/column break
+    // in the original, not a real fenced block)
+    .replace(/^\s*```\s*$/gm, "")
+    // markdown heading syntax on genuine structural labels this Act's text
+    // carries ("## STATE AMENDMENTS", "## Andhra Pradesh"): keep the label,
+    // drop the "#" markers, which our plain-text rendering can't interpret
+    .replace(/^#{1,6}\s*/gm, "")
     .replace(/[ \t]+/g, " ")
     .replace(/\s*\n\s*\n\s*/g, "\n\n")
     .trim();
