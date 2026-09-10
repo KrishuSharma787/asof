@@ -5,8 +5,14 @@ import { normalizeForMatch } from "./validation";
 
 const MODEL = "openai/gpt-oss-20b";
 const REQUEST_TIMEOUT_MS = 20000;
-const MAX_CONCURRENT_CALLS = 5;
-const EXCERPT_CHAR_LIMIT = 12000;
+// Groq's free tier allows 8,000 tokens per minute. Five concurrent calls at
+// 12,000 chars each (~3k tokens apiece) blew straight through that and every
+// pair 429'd, silently emptying the citation graph. Deciding whether judgment
+// A discusses judgment B only needs the passage where B is named, so we send
+// a window around the citation instead of the whole judgment, and keep fewer
+// calls in flight.
+const MAX_CONCURRENT_CALLS = 2;
+const EXCERPT_CHAR_LIMIT = 2500;
 
 // n choose 2 for n=10 (the retrieval hard cap) — enforced again explicitly
 // below, not just implied by the judgment count.
@@ -49,14 +55,36 @@ Does the later judgment's excerpt discuss the earlier judgment, and if so how? C
 If relationship is not "none", supporting_quote must be an exact, verbatim substring copied from the excerpt above proving the classification. If you cannot find such an exact quote, you must return relationship "none" and supporting_quote null.`;
 }
 
+// Indian judgments cite each other by party name ("Shreya Singhal"), rarely
+// by full cause title, so we search on the most distinctive leading words and
+// window around the hit. Truncating from the start instead would usually cut
+// off the citation entirely, since discussion of precedent sits well into a
+// judgment -- the model would then correctly report "none" for a pair that
+// genuinely does cite.
+function windowAroundCitation(text: string, citedCaseName: string): string {
+  if (text.length <= EXCERPT_CHAR_LIMIT) return text;
+
+  const needle = citedCaseName
+    .replace(/\b(vs?\.?|versus|union of india|u\.?o\.?i\.?|state of .*)\b/gi, " ")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .join(" ");
+
+  const at = needle.length > 2 ? text.toLowerCase().indexOf(needle.toLowerCase()) : -1;
+  if (at === -1) return text.slice(0, EXCERPT_CHAR_LIMIT);
+
+  const start = Math.max(0, at - Math.floor(EXCERPT_CHAR_LIMIT / 2));
+  return text.slice(start, start + EXCERPT_CHAR_LIMIT);
+}
+
 async function classifyPair(
   client: Groq,
   later: KeyJudgment,
   earlier: KeyJudgment,
   laterText: string,
 ): Promise<{ relationship: CitationRelationship; quote: string | null }> {
-  const excerpt =
-    laterText.length > EXCERPT_CHAR_LIMIT ? laterText.slice(0, EXCERPT_CHAR_LIMIT) : laterText;
+  const excerpt = windowAroundCitation(laterText, earlier.case_name);
 
   const completion = await client.chat.completions.create({
     model: MODEL,

@@ -8,7 +8,12 @@ import { tavily } from "@tavily/core";
 // results. Fixed by merging in a doctypes:supremecourt-biased search (see
 // searchIndianKanoon) rather than raising this alone, but the higher cap
 // also meaningfully broadens general coverage.
-export const MAX_JUDGMENTS = 18;
+//
+// Settled at 12 rather than 18: at 18 the synthesis prompt grew large enough
+// that Gemini 504'd on it repeatedly. Because the Supreme Court hits are
+// merged ahead of the general list, trimming the tail drops the least
+// authoritative results and keeps the recall fix intact.
+export const MAX_JUDGMENTS = 12;
 
 export const TRUSTED_DOMAINS = [
   "indiankanoon.org",
@@ -28,6 +33,24 @@ export interface RetrievedJudgment {
 }
 
 const FETCH_TIMEOUT_MS = 15000;
+const IK_FETCH_CONCURRENCY = 6;
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await fn(items[index]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 function sanitizeInput(input: string): string {
   return input.replace(/[\r\n\t]/g, " ").trim().slice(0, 200);
@@ -130,8 +153,14 @@ async function searchIndianKanoon(
   }
   const topDocs = mergedDocs.slice(0, MAX_JUDGMENTS);
 
-  const fullDocs = await Promise.all(
-    topDocs.map(async (doc): Promise<RetrievedJudgment | null> => {
+  // Fetched in batches rather than all at once: firing 18 document requests
+  // at Indian Kanoon simultaneously started tripping the per-request timeout,
+  // and a timeout here fails the whole IK path over to the weaker Tavily
+  // fallback, quietly costing us the better sources.
+  const fullDocs = await mapWithConcurrency(
+    topDocs,
+    IK_FETCH_CONCURRENCY,
+    async (doc): Promise<RetrievedJudgment | null> => {
       try {
         const docUrl = `https://api.indiankanoon.org/doc/${doc.tid}/`;
         const docRes = await fetchWithTimeout(docUrl, {
@@ -153,7 +182,7 @@ async function searchIndianKanoon(
       } catch {
         return null;
       }
-    }),
+    },
   );
 
   return fullDocs.filter((d): d is RetrievedJudgment => d !== null);

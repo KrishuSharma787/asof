@@ -9,15 +9,48 @@ const MODEL = "gemini-3.6-flash";
 // interpretive passage is usually a fraction of a full judgment, so this
 // trades a smaller amount of per-document depth for meaningfully broader
 // coverage within a similar total prompt size.
-const EXCERPT_CHAR_LIMIT = 9000;
+// Judgments are sent as a window around the provision being asked about, not
+// as whole documents. At 18 retrieved judgments, full-length excerpts pushed
+// the prompt past ~50k tokens and Gemini 504'd on both attempts -- the user
+// saw only "temporarily unavailable". A court's construction of a section
+// sits around where it discusses that section, so windowing keeps the part
+// that matters and drops the procedural bulk that never grounds anything.
+const EXCERPT_CHAR_LIMIT = 3500;
 // Statute-book hits only need the repealing sentence and its surroundings,
 // not the whole Act. Keeping these short matters: with 18 judgments already
 // in the prompt, sending four full Acts alongside them pushed Gemini past its
 // own deadline and 504'd both attempts.
 const STATUTE_BOOK_CHAR_LIMIT = 2500;
-const REQUEST_TIMEOUT_MS = 30000;
+const RETRY_BACKOFF_MS = 2000;
+const REQUEST_TIMEOUT_MS = 40000;
 
 const RESPONSE_JSON_SCHEMA = z.toJSONSchema(InterpretationResultSchema);
+
+export type GeminiFailureKind = "quota" | "transient" | "other";
+
+export class GeminiError extends Error {
+  constructor(
+    public readonly kind: GeminiFailureKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GeminiError";
+  }
+}
+
+// A daily-quota 429 and a transient 504 need opposite handling. Retrying a
+// quota error is worse than pointless: it spends a second request against the
+// very allowance that just ran out, and the user still waits for it. Only
+// transient failures are worth a second attempt.
+function classifyFailure(err: unknown): GeminiFailureKind {
+  const status = (err as { status?: number })?.status;
+  const message = String((err as { message?: string })?.message ?? "");
+  if (status === 429 || /quota|rate limit|RESOURCE_EXHAUSTED/i.test(message)) return "quota";
+  if (status === 503 || status === 504 || /DEADLINE_EXCEEDED|UNAVAILABLE/i.test(message)) {
+    return "transient";
+  }
+  return "other";
+}
 
 // Deliberately one call, not two: an earlier version split the amendment
 // timeline into its own Gemini call and hit two real problems in live
@@ -97,7 +130,7 @@ ${statuteBookSources.length > 0 ? formatSources(statuteBookSources, 1, STATUTE_B
 
 JUDGMENT/COMMENTARY sources:
 
-${sources.length > 0 ? formatSources(sources, statuteBookSources.length + 1) : "(none retrieved)"}
+${sources.length > 0 ? formatSources(sources, statuteBookSources.length + 1, EXCERPT_CHAR_LIMIT, section ?? undefined) : "(none retrieved)"}
 
 AMENDMENT-HISTORY sources:
 
@@ -144,8 +177,20 @@ export async function synthesizeInterpretation(
   try {
     response = await call();
   } catch (firstErr) {
+    const kind = classifyFailure(firstErr);
+    if (kind === "quota") {
+      throw new GeminiError("quota", "Gemini quota exhausted");
+    }
+    // Pause before retrying. The transient failures seen here -- 504 deadline,
+    // 503 "experiencing high demand" -- recur if you retry instantly, turning
+    // one bad moment into a failed request for the user.
     console.error("[gemini] first attempt failed, retrying once:", firstErr);
-    response = await call();
+    await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
+    try {
+      response = await call();
+    } catch (retryErr) {
+      throw new GeminiError(classifyFailure(retryErr), String((retryErr as Error).message));
+    }
   }
 
   const text = response.text;

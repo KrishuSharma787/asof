@@ -7,7 +7,7 @@ import {
   type RetrievedJudgment,
 } from "@/lib/retrieval";
 import { fetchStatutoryText } from "@/lib/legislation";
-import { synthesizeInterpretation } from "@/lib/gemini";
+import { synthesizeInterpretation, GeminiError } from "@/lib/gemini";
 import { validateInterpretationResult } from "@/lib/validation";
 import { extractCitationEdges, type CitationEdge } from "@/lib/groq";
 import { detectConflicts, type ConflictEntry } from "@/lib/conflicts";
@@ -25,7 +25,7 @@ export const maxDuration = 60;
 // it change, so a stale entry from before the change is never served. Cached
 // answers are as version-bound as the schema: a prompt fix that corrects a
 // wrong status is worthless if yesterday's wrong answer is still served.
-const RESPONSE_SCHEMA_VERSION = "6";
+const RESPONSE_SCHEMA_VERSION = "7";
 
 interface CheckRequestBody {
   actName?: unknown;
@@ -131,6 +131,18 @@ export async function POST(req: NextRequest) {
       );
     } catch (err) {
       console.error("[api/check] Gemini synthesis failed:", err);
+      // Tell the user which wall they hit. "Try again shortly" is actively
+      // misleading for a daily quota that resets tomorrow -- they'd sit there
+      // retrying a request that cannot succeed.
+      if (err instanceof GeminiError && err.kind === "quota") {
+        return NextResponse.json(
+          {
+            error:
+              "The daily quota for the AI analysis service has been used up. It resets every 24 hours — or enable billing on the Gemini API key to remove the cap.",
+          },
+          { status: 429 },
+        );
+      }
       return NextResponse.json(
         { error: "The interpretation service is temporarily unavailable. Please try again shortly." },
         { status: 502 },
