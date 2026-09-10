@@ -28,6 +28,7 @@ export const InterpretationResultSchema = z.object({
   technical_summary: z.string().min(1),
   key_judgments: z.array(KeyJudgmentSchema),
   confidence: z.enum(CONFIDENCE_VALUES),
+  last_amendment_year: z.number().int().nullable(),
 });
 
 export type Status = (typeof STATUS_VALUES)[number];

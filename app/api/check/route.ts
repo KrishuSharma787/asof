@@ -3,6 +3,7 @@ import { retrieveJudgments } from "@/lib/retrieval";
 import { synthesizeInterpretation } from "@/lib/gemini";
 import { validateInterpretationResult } from "@/lib/validation";
 import { extractCitationEdges, type CitationEdge } from "@/lib/groq";
+import { detectConflicts, type ConflictEntry } from "@/lib/conflicts";
 import { buildCacheKey, getCached, setCached } from "@/lib/cache";
 import type { InterpretationResult } from "@/types/schema";
 
@@ -12,6 +13,10 @@ import type { InterpretationResult } from "@/types/schema";
 // lib/groq.ts), so this is a ceiling, not a substitute for those.
 export const maxDuration = 60;
 
+// Bump whenever CheckResponseBody's shape changes, so a stale cache entry
+// from before the change is never served to a client expecting new fields.
+const RESPONSE_SCHEMA_VERSION = "2";
+
 interface CheckRequestBody {
   actName?: unknown;
   section?: unknown;
@@ -19,6 +24,7 @@ interface CheckRequestBody {
 
 export interface CheckResponseBody extends InterpretationResult {
   citation_edges: CitationEdge[];
+  conflicts: ConflictEntry[];
   retrieved_source_count: number;
 }
 
@@ -35,6 +41,7 @@ function buildEmptyResult(actName: string, section: string | null): Interpretati
       "No significant judicial reinterpretation was found in the retrieved material. This reflects the absence of matching sources in this search, not a confirmed absence of case law.",
     key_judgments: [],
     confidence: "low",
+    last_amendment_year: null,
   };
 }
 
@@ -56,7 +63,7 @@ export async function POST(req: NextRequest) {
   const section =
     typeof body.section === "string" && body.section.trim().length > 0 ? body.section : null;
 
-  const cacheKey = buildCacheKey(actName, section);
+  const cacheKey = `${buildCacheKey(actName, section)}::v${RESPONSE_SCHEMA_VERSION}`;
   const cached = getCached<CheckResponseBody>(cacheKey);
   if (cached) {
     return NextResponse.json(cached);
@@ -77,6 +84,7 @@ export async function POST(req: NextRequest) {
     const response: CheckResponseBody = {
       ...buildEmptyResult(actName, section),
       citation_edges: [],
+      conflicts: [],
       retrieved_source_count: 0,
     };
     setCached(cacheKey, response);
@@ -113,9 +121,12 @@ export async function POST(req: NextRequest) {
     console.error("[api/check] Groq citation extraction failed, continuing without it:", err);
   }
 
+  const conflicts = detectConflicts(result.key_judgments, citationEdges);
+
   const response: CheckResponseBody = {
     ...result,
     citation_edges: citationEdges,
+    conflicts,
     retrieved_source_count: sources.length,
   };
   setCached(cacheKey, response);

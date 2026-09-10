@@ -4,6 +4,8 @@ import { useState } from "react";
 import { ActInputForm } from "@/components/ActInputForm";
 import { StatusCard } from "@/components/StatusCard";
 import { JudgmentList } from "@/components/JudgmentList";
+import { CitationGraph } from "@/components/CitationGraph";
+import { ConflictBanner } from "@/components/ConflictBanner";
 import type { CheckResponseBody } from "@/app/api/check/route";
 
 type RequestState =
@@ -70,7 +72,12 @@ export default function Home() {
       {state.phase === "success" && (
         <div>
           <StatusCard result={state.data} />
-          <JudgmentList judgments={state.data.key_judgments} />
+          <ConflictBanner conflicts={state.data.conflicts} />
+          <JudgmentList
+            judgments={state.data.key_judgments}
+            lastAmendmentYear={state.data.last_amendment_year}
+          />
+          <CitationGraph edges={state.data.citation_edges} />
         </div>
       )}
     </main>

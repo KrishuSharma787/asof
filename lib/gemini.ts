@@ -18,7 +18,8 @@ Rules, all mandatory:
 4. If none of the excerpts show a court actually interpreting the provision, set key_judgments to an empty array and reflect that in status/current_force_status_explanation/confidence — never invent an interpretation from your own training knowledge.
 5. Do not state any interpretation, effect, or status claim that is not directly grounded in the provided excerpts.
 6. status must be exactly one of: in_force, repealed, struck_down, read_down, omitted.
-7. confidence reflects how many/how strong the grounding excerpts are: high (multiple clear, on-point excerpts, especially from higher courts), medium (some relevant material but limited or lower-tier), low (thin, tangential, or largely absent grounding).`;
+7. confidence reflects how many/how strong the grounding excerpts are: high (multiple clear, on-point excerpts, especially from higher courts), medium (some relevant material but limited or lower-tier), low (thin, tangential, or largely absent grounding).
+8. last_amendment_year: set this to the year the Act (or this section) was last amended ONLY if an excerpt explicitly states an amendment/enactment year for it. If no excerpt states one, set it to null — never estimate or infer a year.`;
 
 function buildUserPrompt(
   actName: string,
