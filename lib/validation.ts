@@ -21,6 +21,19 @@ export function normalizeForMatch(text: string): string {
     .trim();
 }
 
+const COMMON_WORD_STOPLIST = new Set([
+  "or", "and", "not", "any", "all", "but", "may", "the", "for", "with",
+  "from", "that", "this", "such", "shall", "been", "have", "has", "had",
+  "was", "were", "are", "is", "of", "to", "in", "on", "by", "as", "if",
+]);
+
+function isTooGenericToHighlight(phrase: string): boolean {
+  const words = phrase.trim().split(/\s+/);
+  if (words.length > 1) return false;
+  const bare = words[0]?.toLowerCase().replace(/[^a-z]/g, "") ?? "";
+  return bare.length < 4 || COMMON_WORD_STOPLIST.has(bare);
+}
+
 export function validateInterpretationResult(
   raw: unknown,
   sources: RetrievedJudgment[],
@@ -63,6 +76,17 @@ export function validateInterpretationResult(
   const normalizedStatutoryText = statutoryText ? normalizeForMatch(statutoryText) : null;
 
   const verifiedHighlights = parsed.data.highlighted_phrases.filter((highlight) => {
+    // Backstop independent of the prompt: a bare common word ("or", "and",
+    // "shall") verbatim-matches almost any block of English text and, once
+    // rendered, matches every occurrence of that word in the DOM -- observed
+    // live corrupting the middle of unrelated words ("Auth[or]" from a
+    // highlight on the word "or"). The prompt now asks for a full clause
+    // instead of the bare word, but this holds regardless of whether the
+    // model complies.
+    if (isTooGenericToHighlight(highlight.phrase)) {
+      droppedHighlights.push(highlight.phrase);
+      return false;
+    }
     if (
       !normalizedStatutoryText ||
       !normalizedStatutoryText.includes(normalizeForMatch(highlight.phrase))
@@ -121,15 +145,21 @@ export function validateInterpretationResult(
   }
 
   const statusDowngraded = parsed.data.status !== "unverified" && !statusEvidenceHolds;
+  const finalStatus = statusDowngraded ? "unverified" : parsed.data.status;
 
   return {
     result: {
       ...parsed.data,
-      status: statusDowngraded ? "unverified" : parsed.data.status,
+      status: finalStatus,
       status_evidence: statusEvidenceHolds ? evidence : null,
-      // An unverified status can't be reported at high confidence.
-      confidence:
-        statusDowngraded && parsed.data.confidence === "high" ? "medium" : parsed.data.confidence,
+      // "Status not verified" next to a "High confidence" badge reads as a
+      // contradiction to anyone looking at the card, confirmed live -- and
+      // that pairing isn't limited to a downgrade: the model can report
+      // "unverified" on its own (correctly, when nothing in the sources
+      // says either way) while still rating its judgment-interpretation
+      // evidence "high" on the schema's own separate axis. Whatever the
+      // reason, unverified status caps confidence at low.
+      confidence: finalStatus === "unverified" ? "low" : parsed.data.confidence,
       key_judgments: verifiedJudgments,
       highlighted_phrases: verifiedHighlights,
       amendment_timeline: verifiedTimeline,

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { parquetReadObjects } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
+import { actNameWithoutYear } from "./actName";
 
 // Verbatim statutory text from vaquill/open-india-law (CC BY 4.0), read from
 // a locally cached copy of the central-legislation parquet rather than
@@ -233,8 +234,8 @@ export async function fetchActAmendments(
   const rows = await loadRows();
   if (!rows) return [];
 
-  const targetAct = normalizeActName(actName.split(",")[0]);
-  const targetSection = section ? normalizeSection(section) : null;
+  const targetAct = normalizeActName(actNameWithoutYear(actName));
+  const targetSection = section ? normalizeSection(baseSectionNumber(section)) : null;
 
   const relevant = rows.filter((row) => {
     if (!row.text || !row.source_url) return false;
@@ -268,6 +269,20 @@ function normalizeSection(section: string): string {
   return section.trim().toLowerCase().replace(/^section\s+/, "").replace(/[.\s]/g, "");
 }
 
+// The snapshot stores one row per top-level section, not per sub-section --
+// there is no row for "24(2)", only "24", which contains all of 24's
+// sub-clauses in its text. Requesting "24(2)" against a snapshot that only
+// has "24" previously matched nothing and silently fell through to a much
+// worse fallback (see retrieveStatutoryTextFallback in lib/retrieval.ts),
+// which had no way to tell a judgment from a statute and returned one as if
+// it were the other. Stripping to the base number fixes the lookup; a letter
+// glued directly to the number ("66A") is left alone, since that names a
+// distinct section, not a sub-clause of the one before it.
+function baseSectionNumber(section: string): string {
+  const idx = section.indexOf("(");
+  return idx === -1 ? section : section.slice(0, idx);
+}
+
 function normalizeActName(actName: string): string {
   return actName
     .toLowerCase()
@@ -282,12 +297,12 @@ export async function fetchStatutoryText(
   const rows = await loadRows();
   if (!rows) return null;
 
-  const targetSection = normalizeSection(section);
+  const targetSection = normalizeSection(baseSectionNumber(section));
   // "Information Technology Act" should match "The Information Technology
   // Act, 2000", so compare on an alphanumeric-only reduction and allow the
   // stored title to merely contain the query. Indian Acts also vary on
   // hyphenation ("Income-tax" vs "Income Tax"), which this collapses too.
-  const targetAct = normalizeActName(actName.split(",")[0]);
+  const targetAct = normalizeActName(actNameWithoutYear(actName));
 
   const matches = rows.filter((row) => {
     if (!row.text || !row.source_url) return false;

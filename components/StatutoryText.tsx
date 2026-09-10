@@ -15,12 +15,26 @@ interface Match {
   noteNumber: number;
 }
 
+// A plain indexOf() matches inside other words -- confirmed live: a highlight
+// on the word "or" landed inside "Author" and split it into "Auth[or](...)".
+// Word-boundary regex keeps the match confined to whole words at the edges
+// of the phrase; punctuation-bounded phrases (a phrase starting or ending on
+// a non-word character) don't need a boundary there since they can't merge
+// into an adjacent word anyway.
+function findPhraseSpan(text: string, phrase: string): { start: number; end: number } | null {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const leadingBoundary = /^\w/.test(phrase) ? "\\b" : "";
+  const trailingBoundary = /\w$/.test(phrase) ? "\\b" : "";
+  const match = new RegExp(`${leadingBoundary}${escaped}${trailingBoundary}`).exec(text);
+  return match ? { start: match.index, end: match.index + match[0].length } : null;
+}
+
 function findMatches(text: string, highlights: HighlightedPhrase[]): Match[] {
   const matches: Match[] = [];
   highlights.forEach((h, i) => {
-    const start = text.indexOf(h.phrase);
-    if (start === -1) return;
-    matches.push({ start, end: start + h.phrase.length, noteNumber: i + 1 });
+    const span = findPhraseSpan(text, h.phrase);
+    if (!span) return;
+    matches.push({ start: span.start, end: span.end, noteNumber: i + 1 });
   });
   matches.sort((a, b) => a.start - b.start);
 

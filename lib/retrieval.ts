@@ -425,8 +425,16 @@ export async function retrieveStatutoryTextFallback(
     const docs: IndianKanoonDocSummary[] = Array.isArray(searchJson?.docs) ? searchJson.docs : [];
     if (docs.length === 0) return null;
 
-    const bareTextDoc =
-      docs.find((d) => /^section\s+\S+\s+in\s+/i.test(d.title ?? "")) ?? docs[0];
+    // Only accept a result that looks like a bare statutory-text page. This
+    // used to fall back to docs[0] unconditionally when nothing matched,
+    // which silently handed back a judgment as if it were the statute --
+    // confirmed live for a sub-section query ("24(2)") where no bare-text
+    // page exists under that exact label: the fallback returned a High
+    // Court judgment's full opinion, rendered under the "Statutory text"
+    // heading. Returning null and letting the feature not render is the
+    // honest outcome; guessing wrong is not.
+    const bareTextDoc = docs.find((d) => /^section\s+\S+\s+in\s+/i.test(d.title ?? ""));
+    if (!bareTextDoc) return null;
 
     const docUrl = `https://api.indiankanoon.org/doc/${bareTextDoc.tid}/`;
     const docRes = await fetchWithTimeout(docUrl, {

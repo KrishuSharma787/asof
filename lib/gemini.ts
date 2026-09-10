@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { InterpretationResultSchema } from "../types/schema";
 import type { RetrievedJudgment } from "./retrieval";
+import { actNameWithoutYear } from "./actName";
 
 // Tried in order, falling through on quota exhaustion or an overloaded model.
 //
@@ -86,7 +87,7 @@ Rules, all mandatory:
    - NEVER cite the metadata header at the start of the statutory text (lines like "Act: The X Act, 1961 (Act 43 of 1961) | India | Central | In Force") as status evidence. That header is a dated snapshot label, not a statement of current law -- it has been observed still saying "In Force" for an Act that a later Act had already repealed.
    - If you cannot quote positive evidence for any status, return status "unverified" with status_evidence null. That is the correct, expected answer when the sources simply don't say -- it is never acceptable to fall back to "in_force" because nothing contradicted it.
 7. confidence reflects how many/how strong the JUDGMENT grounding excerpts are: high (multiple clear, on-point excerpts, especially from higher courts), medium (some relevant material but limited or lower-tier), low (thin, tangential, or largely absent grounding).
-8. highlighted_phrases: ONLY when verbatim statutory text is provided. For each specific word or short phrase in that text whose practical meaning a JUDGMENT excerpt shows has been narrowed, broadened, or otherwise changed from its plain reading, add an entry. "phrase" must be an exact, verbatim substring of the statutory text. If no statutory text is provided, or no phrase's interpretation is actually shown to have shifted, return an empty array.
+8. highlighted_phrases: ONLY when verbatim statutory text is provided. For each specific word or short phrase in that text whose practical meaning a JUDGMENT excerpt shows has been narrowed, broadened, or otherwise changed from its plain reading, add an entry. "phrase" must be an exact, verbatim substring of the statutory text, AND it must be long enough to identify one specific instance unambiguously in context -- at least a few words. If the word doing the interpretive work is itself short or common (e.g. "or", "shall", "and"), do not quote that word alone: quote the specific clause it sits in (e.g. "has not been taken or the compensation has not been paid", not "or"), so the highlight lands on the one instance at issue rather than matching every occurrence of a common word. If no statutory text is provided, or no phrase's interpretation is actually shown to have shifted, return an empty array.
 9. amendment_timeline: built from the AMENDMENT-HISTORY sources AND from amendment footnotes inside the verbatim statutory text, if present. India Code text carries the authoritative record as footnotes -- "Subs. by Act 3 of 1989, s. 23, for ... (w.e.f. 1-4-1989)", "Ins. by Act 4 of 1988", "Omitted by Act 20 of 2002" -- and each is a quotable amendment event: use the amending Act's year (or the w.e.f. date's year) as "year" and quote the footnote verbatim as supporting_quote, with the statutory text's own source_url. Prefer these footnotes over commentary: they are the statute book itself. Never build an entry from a judgment source. Each entry is a legislative event only (enactment, an amending Act, an insertion, an omission) — never a court judgment. "event" is a short label (e.g. "Enacted", "Inserted by the IT (Amendment) Act, 2008"). "description" is one or two sentences of context. Order chronologically by year. If a reference amendment count is given in the prompt and your entries fall short of it, that's expected when sources don't cover every one — do not invent entries to make the count match. If no amendment-history sources describe an actual event, return an empty array.`;
 
 function formatSources(
@@ -121,6 +122,23 @@ export interface StatutoryTextInput {
   sourceUrl: string;
 }
 
+// Fixed per-source caps (the EXCERPT_CHAR_LIMIT/STATUTE_BOOK_CHAR_LIMIT
+// constants) bound each document individually but not the prompt as a whole.
+// That held for the queries this was tuned against -- typically 1 statute-book
+// hit and 1-2 amendment sources -- but a well-litigated Act with a large
+// amendment-history footprint (confirmed live: RFCTLARR s.24(2), 4 statute-book
+// + 8 judgments + 8 amendment sources) reached ~71,000 characters, and every
+// model in the fallback chain 503/504'd on it. This spreads a single total
+// budget across however many sources actually came back, so the prompt stays
+// bounded regardless of source count -- shrinking per-source coverage under
+// load rather than letting the whole request fail.
+const TOTAL_SOURCE_BUDGET = 32000;
+
+function budgetPerSource(count: number, cap: number): number {
+  if (count === 0) return cap;
+  return Math.min(cap, Math.floor(TOTAL_SOURCE_BUDGET / count));
+}
+
 function buildUserPrompt(
   actName: string,
   section: string | null,
@@ -129,23 +147,42 @@ function buildUserPrompt(
   statuteBookSources: RetrievedJudgment[],
   statutoryText: StatutoryTextInput | null,
 ): string {
+  // Also unbounded until now: some sections run enormous (Section 2 of the
+  // Income Tax Act, a definitions section, is 111,000 characters). Highlights
+  // need the sub-section actually asked about, so window around the section
+  // number rather than truncating from the start.
+  const STATUTORY_TEXT_CHAR_LIMIT = 8000;
+  const statutoryTextForPrompt =
+    statutoryText && statutoryText.text.length > STATUTORY_TEXT_CHAR_LIMIT
+      ? (() => {
+          const at = section ? statutoryText.text.indexOf(section) : -1;
+          const start = at !== -1 ? Math.max(0, at - Math.floor(STATUTORY_TEXT_CHAR_LIMIT / 2)) : 0;
+          return `…${statutoryText.text.slice(start, start + STATUTORY_TEXT_CHAR_LIMIT)}…`;
+        })()
+      : statutoryText?.text;
+
   const statutoryBlock = statutoryText
-    ? `\n\nVerbatim statutory text of the section (URL: ${statutoryText.sourceUrl}):\n${statutoryText.text}`
+    ? `\n\nVerbatim statutory text of the section (URL: ${statutoryText.sourceUrl}):\n${statutoryTextForPrompt}`
     : "";
+
+  const totalCount = statuteBookSources.length + sources.length + amendmentSources.length;
+  const statuteBookLimit = budgetPerSource(totalCount, STATUTE_BOOK_CHAR_LIMIT);
+  const judgmentLimit = budgetPerSource(totalCount, EXCERPT_CHAR_LIMIT);
+  const amendmentLimit = budgetPerSource(totalCount, EXCERPT_CHAR_LIMIT);
 
   return `Act: ${actName}\nSection: ${section ?? "N/A"}${statutoryBlock}
 
 STATUTE-BOOK sources (use these for force status -- whether this Act has been repealed by a later Act):
 
-${statuteBookSources.length > 0 ? formatSources(statuteBookSources, 1, STATUTE_BOOK_CHAR_LIMIT, "hereby repealed") : "(none retrieved)"}
+${statuteBookSources.length > 0 ? formatSources(statuteBookSources, 1, statuteBookLimit, "hereby repealed") : "(none retrieved)"}
 
 JUDGMENT/COMMENTARY sources:
 
-${sources.length > 0 ? formatSources(sources, statuteBookSources.length + 1, EXCERPT_CHAR_LIMIT, section ?? actName.split(",")[0]) : "(none retrieved)"}
+${sources.length > 0 ? formatSources(sources, statuteBookSources.length + 1, judgmentLimit, section ?? actNameWithoutYear(actName)) : "(none retrieved)"}
 
 AMENDMENT-HISTORY sources:
 
-${amendmentSources.length > 0 ? formatSources(amendmentSources, statuteBookSources.length + sources.length + 1) : "(none retrieved)"}
+${amendmentSources.length > 0 ? formatSources(amendmentSources, statuteBookSources.length + sources.length + 1, amendmentLimit) : "(none retrieved)"}
 
 Using ONLY the sources above, produce the JSON result.`;
 }
