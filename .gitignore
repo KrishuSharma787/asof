@@ -42,3 +42,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# scratch API responses from manual testing
+/*.json
+!package.json
+!package-lock.json
+!tsconfig.json
