@@ -4,6 +4,8 @@ import type { RetrievedJudgment } from "./retrieval";
 export interface ValidationOutcome {
   result: InterpretationResult | null;
   droppedJudgments: string[];
+  droppedHighlights: string[];
+  droppedTimelineEntries: number;
   errors: string[];
 }
 
@@ -21,12 +23,16 @@ export function normalizeForMatch(text: string): string {
 export function validateInterpretationResult(
   raw: unknown,
   sources: RetrievedJudgment[],
+  amendmentSources: RetrievedJudgment[],
+  statutoryText: string | null = null,
 ): ValidationOutcome {
   const parsed = InterpretationResultSchema.safeParse(raw);
   if (!parsed.success) {
     return {
       result: null,
       droppedJudgments: [],
+      droppedHighlights: [],
+      droppedTimelineEntries: 0,
       errors: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
     };
   }
@@ -50,9 +56,55 @@ export function validateInterpretationResult(
     return true;
   });
 
+  const droppedHighlights: string[] = [];
+  const normalizedStatutoryText = statutoryText ? normalizeForMatch(statutoryText) : null;
+
+  const verifiedHighlights = parsed.data.highlighted_phrases.filter((highlight) => {
+    if (
+      !normalizedStatutoryText ||
+      !normalizedStatutoryText.includes(normalizeForMatch(highlight.phrase))
+    ) {
+      droppedHighlights.push(highlight.phrase);
+      return false;
+    }
+    const source = sourceByUrl.get(highlight.source_url);
+    if (!source) {
+      droppedHighlights.push(highlight.phrase);
+      return false;
+    }
+    if (!normalizeForMatch(source.text).includes(normalizeForMatch(highlight.supporting_quote))) {
+      droppedHighlights.push(highlight.phrase);
+      return false;
+    }
+    return true;
+  });
+
+  const amendmentSourceByUrl = new Map(amendmentSources.map((s) => [s.url, s]));
+  let droppedTimelineEntries = 0;
+
+  const verifiedTimeline = parsed.data.amendment_timeline.filter((entry) => {
+    const source = amendmentSourceByUrl.get(entry.source_url);
+    if (!source) {
+      droppedTimelineEntries += 1;
+      return false;
+    }
+    if (!normalizeForMatch(source.text).includes(normalizeForMatch(entry.supporting_quote))) {
+      droppedTimelineEntries += 1;
+      return false;
+    }
+    return true;
+  });
+
   return {
-    result: { ...parsed.data, key_judgments: verifiedJudgments },
+    result: {
+      ...parsed.data,
+      key_judgments: verifiedJudgments,
+      highlighted_phrases: verifiedHighlights,
+      amendment_timeline: verifiedTimeline,
+    },
     droppedJudgments,
+    droppedHighlights,
+    droppedTimelineEntries,
     errors: [],
   };
 }

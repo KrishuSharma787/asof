@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { retrieveJudgments } from "@/lib/retrieval";
+import {
+  retrieveJudgments,
+  retrieveAmendmentHistory,
+  retrieveStatutoryTextFallback,
+  type RetrievedJudgment,
+} from "@/lib/retrieval";
+import { fetchStatutoryText } from "@/lib/vaquill";
 import { synthesizeInterpretation } from "@/lib/gemini";
 import { validateInterpretationResult } from "@/lib/validation";
 import { extractCitationEdges, type CitationEdge } from "@/lib/groq";
@@ -7,15 +13,16 @@ import { detectConflicts, type ConflictEntry } from "@/lib/conflicts";
 import { buildCacheKey, getCached, setCached } from "@/lib/cache";
 import type { InterpretationResult } from "@/types/schema";
 
-// Retrieval + Gemini + up to 45 Groq calls can, in the worst case, run past
-// Vercel's default serverless timeout — extend it. Each upstream call still
-// has its own bounded timeout (see lib/retrieval.ts, lib/gemini.ts,
-// lib/groq.ts), so this is a ceiling, not a substitute for those.
+// Retrieval + 1 Gemini call (with 1 retry) + up to 45 Groq calls can, in the
+// worst case, run past Vercel's default serverless timeout — extend it.
+// Each upstream call still has its own bounded timeout (see lib/retrieval.ts,
+// lib/gemini.ts, lib/groq.ts, lib/vaquill.ts), so this is a ceiling, not a
+// substitute for those.
 export const maxDuration = 60;
 
 // Bump whenever CheckResponseBody's shape changes, so a stale cache entry
 // from before the change is never served to a client expecting new fields.
-const RESPONSE_SCHEMA_VERSION = "2";
+const RESPONSE_SCHEMA_VERSION = "4";
 
 interface CheckRequestBody {
   actName?: unknown;
@@ -26,6 +33,10 @@ export interface CheckResponseBody extends InterpretationResult {
   citation_edges: CitationEdge[];
   conflicts: ConflictEntry[];
   retrieved_source_count: number;
+  statutory_text: string | null;
+  statutory_text_source: "vaquill" | "indiankanoon" | null;
+  statutory_text_source_url: string | null;
+  last_amendment_year: number | null;
 }
 
 function buildEmptyResult(actName: string, section: string | null): InterpretationResult {
@@ -34,14 +45,11 @@ function buildEmptyResult(actName: string, section: string | null): Interpretati
     section,
     status: "in_force",
     current_force_status_explanation:
-      "No judgments discussing judicial interpretation of this Act/section were found in the retrieved sources.",
-    plain_summary:
-      "We could not find any court judgments that reinterpreted this provision. This does not necessarily mean none exist — only that none were found in this search.",
-    technical_summary:
-      "No significant judicial reinterpretation was found in the retrieved material. This reflects the absence of matching sources in this search, not a confirmed absence of case law.",
+      "No judgments or amendment history discussing this Act/section were found in the retrieved sources.",
     key_judgments: [],
+    highlighted_phrases: [],
+    amendment_timeline: [],
     confidence: "low",
-    last_amendment_year: null,
   };
 }
 
@@ -69,65 +77,110 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(cached);
   }
 
-  let sources;
-  try {
-    sources = await retrieveJudgments(actName, section);
-  } catch (err) {
-    console.error("[api/check] retrieval failed unexpectedly:", err);
-    return NextResponse.json(
-      { error: "Judgment retrieval is temporarily unavailable. Please try again shortly." },
-      { status: 502 },
-    );
+  const [sources, amendmentSources, vaquillResult] = await Promise.all([
+    retrieveJudgments(actName, section).catch((err): RetrievedJudgment[] => {
+      console.error("[api/check] retrieval failed unexpectedly:", err);
+      return [];
+    }),
+    retrieveAmendmentHistory(actName, section),
+    section ? fetchStatutoryText(actName, section) : Promise.resolve(null),
+  ]);
+
+  let statutoryText: string | null = null;
+  let statutoryTextSource: "vaquill" | "indiankanoon" | null = null;
+  let statutoryTextSourceUrl: string | null = null;
+  let vaquillAnchor: { enactmentYear: number | null; amendmentCount: number | null } | null = null;
+
+  if (section) {
+    if (vaquillResult) {
+      statutoryText = vaquillResult.text;
+      statutoryTextSource = "vaquill";
+      statutoryTextSourceUrl = vaquillResult.sourceUrl;
+      vaquillAnchor = {
+        enactmentYear: vaquillResult.enactmentYear,
+        amendmentCount: vaquillResult.amendmentCount,
+      };
+    } else {
+      const fallback = await retrieveStatutoryTextFallback(actName, section);
+      if (fallback) {
+        statutoryText = fallback.text;
+        statutoryTextSource = "indiankanoon";
+        statutoryTextSourceUrl = fallback.url;
+      }
+    }
   }
 
-  if (sources.length === 0) {
-    const response: CheckResponseBody = {
-      ...buildEmptyResult(actName, section),
-      citation_edges: [],
-      conflicts: [],
-      retrieved_source_count: 0,
-    };
-    setCached(cacheKey, response);
-    return NextResponse.json(response);
+  let interpretationResult: InterpretationResult;
+  if (sources.length === 0 && amendmentSources.length === 0) {
+    interpretationResult = buildEmptyResult(actName, section);
+  } else {
+    let rawSynthesis: unknown;
+    try {
+      rawSynthesis = await synthesizeInterpretation(
+        actName,
+        section,
+        sources,
+        amendmentSources,
+        statutoryText,
+        vaquillAnchor,
+      );
+    } catch (err) {
+      console.error("[api/check] Gemini synthesis failed:", err);
+      return NextResponse.json(
+        { error: "The interpretation service is temporarily unavailable. Please try again shortly." },
+        { status: 502 },
+      );
+    }
+
+    const {
+      result,
+      droppedJudgments,
+      droppedHighlights,
+      droppedTimelineEntries,
+      errors,
+    } = validateInterpretationResult(rawSynthesis, sources, amendmentSources, statutoryText);
+    if (!result) {
+      console.error("[api/check] Gemini output failed schema validation:", errors);
+      return NextResponse.json(
+        { error: "The interpretation service returned an unexpected response. Please try again." },
+        { status: 502 },
+      );
+    }
+    if (droppedJudgments.length > 0) {
+      console.warn("[api/check] dropped judgments failing quote verification:", droppedJudgments);
+    }
+    if (droppedHighlights.length > 0) {
+      console.warn("[api/check] dropped highlights failing verbatim verification:", droppedHighlights);
+    }
+    if (droppedTimelineEntries > 0) {
+      console.warn(`[api/check] dropped ${droppedTimelineEntries} timeline entries failing quote verification`);
+    }
+    interpretationResult = result;
   }
 
-  let rawSynthesis: unknown;
-  try {
-    rawSynthesis = await synthesizeInterpretation(actName, section, sources);
-  } catch (err) {
-    console.error("[api/check] Gemini synthesis failed:", err);
-    return NextResponse.json(
-      { error: "The interpretation service is temporarily unavailable. Please try again shortly." },
-      { status: 502 },
-    );
-  }
-
-  const { result, droppedJudgments, errors } = validateInterpretationResult(rawSynthesis, sources);
-  if (!result) {
-    console.error("[api/check] Gemini output failed schema validation:", errors);
-    return NextResponse.json(
-      { error: "The interpretation service returned an unexpected response. Please try again." },
-      { status: 502 },
-    );
-  }
-  if (droppedJudgments.length > 0) {
-    console.warn("[api/check] dropped judgments failing quote verification:", droppedJudgments);
-  }
+  const lastAmendmentYear =
+    interpretationResult.amendment_timeline.length > 0
+      ? Math.max(...interpretationResult.amendment_timeline.map((e) => e.year))
+      : null;
 
   let citationEdges: CitationEdge[] = [];
   try {
-    citationEdges = await extractCitationEdges(result.key_judgments, sources);
+    citationEdges = await extractCitationEdges(interpretationResult.key_judgments, sources);
   } catch (err) {
     console.error("[api/check] Groq citation extraction failed, continuing without it:", err);
   }
 
-  const conflicts = detectConflicts(result.key_judgments, citationEdges);
+  const conflicts = detectConflicts(interpretationResult.key_judgments, citationEdges);
 
   const response: CheckResponseBody = {
-    ...result,
+    ...interpretationResult,
     citation_edges: citationEdges,
     conflicts,
     retrieved_source_count: sources.length,
+    statutory_text: statutoryText,
+    statutory_text_source: statutoryTextSource,
+    statutory_text_source_url: statutoryTextSourceUrl,
+    last_amendment_year: lastAmendmentYear,
   };
   setCached(cacheKey, response);
   return NextResponse.json(response);

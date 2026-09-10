@@ -6,6 +6,8 @@ import { StatusCard } from "@/components/StatusCard";
 import { JudgmentList } from "@/components/JudgmentList";
 import { CitationGraph } from "@/components/CitationGraph";
 import { ConflictBanner } from "@/components/ConflictBanner";
+import { StatutoryText } from "@/components/StatutoryText";
+import { AmendmentTimeline } from "@/components/AmendmentTimeline";
 import type { CheckResponseBody } from "@/app/api/check/route";
 
 type RequestState =
@@ -73,6 +75,15 @@ export default function Home() {
         <div>
           <StatusCard result={state.data} />
           <ConflictBanner conflicts={state.data.conflicts} />
+          {state.data.statutory_text && state.data.statutory_text_source && (
+            <StatutoryText
+              text={state.data.statutory_text}
+              source={state.data.statutory_text_source}
+              sourceUrl={state.data.statutory_text_source_url}
+              highlights={state.data.highlighted_phrases}
+            />
+          )}
+          <AmendmentTimeline entries={state.data.amendment_timeline} />
           <JudgmentList
             judgments={state.data.key_judgments}
             lastAmendmentYear={state.data.last_amendment_year}

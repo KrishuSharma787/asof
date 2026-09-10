@@ -1,18 +1,9 @@
-"use client";
-
-import { useState } from "react";
 import type { Confidence, InterpretationResult, Status } from "@/types/schema";
 
 interface StatusCardProps {
   result: Pick<
     InterpretationResult,
-    | "act_name"
-    | "section"
-    | "status"
-    | "current_force_status_explanation"
-    | "plain_summary"
-    | "technical_summary"
-    | "confidence"
+    "act_name" | "section" | "status" | "current_force_status_explanation" | "confidence"
   >;
 }
 
@@ -55,8 +46,6 @@ function Badge({ label, className }: { label: string; className: string }) {
 }
 
 export function StatusCard({ result }: StatusCardProps) {
-  const [view, setView] = useState<"plain" | "lawyer">("plain");
-
   return (
     <section className="rounded-lg border border-hairline bg-canvas p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -75,35 +64,6 @@ export function StatusCard({ result }: StatusCardProps) {
 
       <p className="mt-3 max-w-[70ch] text-body-sm text-steel">
         {result.current_force_status_explanation}
-      </p>
-
-      <div className="mt-5 flex gap-1 border-b border-hairline" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view === "plain"}
-          onClick={() => setView("plain")}
-          className={`border-b-2 px-3 py-2 text-body-sm font-medium ${
-            view === "plain" ? "border-ink text-ink" : "border-transparent text-steel"
-          }`}
-        >
-          Plain language
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view === "lawyer"}
-          onClick={() => setView("lawyer")}
-          className={`border-b-2 px-3 py-2 text-body-sm font-medium ${
-            view === "lawyer" ? "border-ink text-ink" : "border-transparent text-steel"
-          }`}
-        >
-          For lawyers
-        </button>
-      </div>
-
-      <p className="mt-4 max-w-[70ch] text-body-md text-ink">
-        {view === "plain" ? result.plain_summary : result.technical_summary}
       </p>
     </section>
   );
