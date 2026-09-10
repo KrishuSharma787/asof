@@ -17,7 +17,7 @@ interface CheckRequestBody {
   section?: unknown;
 }
 
-interface CheckResponseBody extends InterpretationResult {
+export interface CheckResponseBody extends InterpretationResult {
   citation_edges: CitationEdge[];
   retrieved_source_count: number;
 }
