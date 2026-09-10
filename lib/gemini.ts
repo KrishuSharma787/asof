@@ -3,7 +3,17 @@ import { z } from "zod";
 import { InterpretationResultSchema } from "../types/schema";
 import type { RetrievedJudgment } from "./retrieval";
 
-const MODEL = "gemini-3.6-flash";
+// Tried in order, falling through on quota exhaustion or an overloaded model.
+//
+// The free tier's 20 requests/day is scoped per project AND per model
+// (quotaId GenerateRequestsPerDayPerProjectPerModel-FreeTier), so issuing a
+// new API key inside the same project does nothing -- it inherits the same
+// exhausted bucket. Each model, though, has its own allowance and its own
+// capacity pool, and this session hit both walls: 3.6-flash ran out of daily
+// quota, then 3.8-flash returned 503 "experiencing high demand". Falling
+// across models turns either into a slower answer instead of no answer.
+// Still a stopgap -- enabling billing removes the daily cap entirely.
+const MODELS = ["gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash"] as const;
 // Trimmed from an original 20000 now that retrieval sends more sources per
 // request (MAX_JUDGMENTS 10->18, AMENDMENT_SOURCE_CAP 5->8): the relevant
 // interpretive passage is usually a fraction of a full judgment, so this
@@ -160,9 +170,9 @@ export async function synthesizeInterpretation(
     statutoryText,
   );
 
-  const call = () =>
+  const call = (model: string) =>
     ai.models.generateContent({
-      model: MODEL,
+      model,
       contents: userPrompt,
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
@@ -173,24 +183,28 @@ export async function synthesizeInterpretation(
       },
     });
 
-  let response;
-  try {
-    response = await call();
-  } catch (firstErr) {
-    const kind = classifyFailure(firstErr);
-    if (kind === "quota") {
-      throw new GeminiError("quota", "Gemini quota exhausted");
-    }
-    // Pause before retrying. The transient failures seen here -- 504 deadline,
-    // 503 "experiencing high demand" -- recur if you retry instantly, turning
-    // one bad moment into a failed request for the user.
-    console.error("[gemini] first attempt failed, retrying once:", firstErr);
-    await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
+  let response: Awaited<ReturnType<typeof call>> | undefined;
+  let lastKind: GeminiFailureKind = "other";
+  let lastMessage = "";
+
+  for (const model of MODELS) {
     try {
-      response = await call();
-    } catch (retryErr) {
-      throw new GeminiError(classifyFailure(retryErr), String((retryErr as Error).message));
+      response = await call(model);
+      break;
+    } catch (err) {
+      lastKind = classifyFailure(err);
+      lastMessage = String((err as Error).message);
+      console.error(`[gemini] ${model} failed (${lastKind}), trying next model:`, lastMessage.slice(0, 200));
+      // A quota wall won't clear by waiting, so move straight to the next
+      // model. A transient spike might, so give it a moment first.
+      if (lastKind !== "quota") {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
+      }
     }
+  }
+
+  if (!response) {
+    throw new GeminiError(lastKind, lastMessage || "All Gemini models failed");
   }
 
   const text = response.text;
