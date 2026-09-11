@@ -407,6 +407,51 @@ function parseAmendments(
   return out;
 }
 
+// A STATE amendment is recorded in a completely different format from a
+// central one -- not a numbered footnote, but a "STATE AMENDMENTS" prose
+// block ending in a citation note: "[ Vide Andhra Pradesh Act 22 of 2018,
+// sec. 5 (w.e.f. 1-1-2014).]". AMENDMENT_PATTERN never matches this shape,
+// so a section with only state-level amendments (no central footnote at
+// all) produced a "0 amendments" timeline sitting directly under statutory
+// text visibly showing three of them -- confirmed live on RFCTLARR s.24,
+// which has Andhra Pradesh/Maharashtra/Haryana amendments but nothing
+// AMENDMENT_PATTERN could see. "Vide_?" (not "\bVide\b") because this runs
+// on the RAW, not-yet-cleaned row text, where the word is still wrapped in
+// markdown italics ("_Vide_") -- the underscore sits directly against it
+// with no space, so a plain word-boundary match misses it entirely.
+const STATE_AMENDMENT_PATTERN =
+  /Vide_?\s+([A-Za-z][A-Za-z\s]{2,40}?)\s+Act\s+(\d+)\s+of\s+(\d{4}),?\s*sec\.?\s*(\S+?)\s*\(([^)]{3,40})\)/gi;
+
+function parseStateAmendments(
+  text: string,
+  sourceUrl: string,
+  section: string | null,
+): ExtractedAmendment[] {
+  const out: ExtractedAmendment[] = [];
+  for (const m of text.matchAll(STATE_AMENDMENT_PATTERN)) {
+    const [full, state, actNum, actYear, , dateInfo] = m;
+    const enactedYear = Number(actYear);
+    if (!Number.isFinite(enactedYear) || enactedYear < 1800 || enactedYear > 2100) continue;
+    out.push({
+      // Same preference as the central pattern: the commencement date is
+      // when the change actually took effect, the amending Act's own year
+      // is the fallback.
+      year: yearFromWef(dateInfo, enactedYear),
+      event: `${state.trim().replace(/\s+/g, " ")} amendment by Act ${actNum} of ${actYear}`,
+      // The underscore sits mid-string ("Vide_ Andhra...", the italics
+      // marker matched by STATE_AMENDMENT_PATTERN's "Vide_?"), not at
+      // either edge, so trimming only the string's ends leaves it in place
+      // -- confirmed live. It's never real content in this dataset (always
+      // a markdown-italics artifact), so it's dropped outright rather than
+      // anchored.
+      supporting_quote: full.replace(/_/g, "").trim(),
+      source_url: sourceUrl,
+      section,
+    });
+  }
+  return out;
+}
+
 // Whole-Act history: every section of the Act is already in memory, so the
 // footnotes across all of them add up to the Act's real amendment record.
 // This is what makes an Act-level query (no section given) substantive
@@ -435,7 +480,10 @@ export async function fetchActAmendments(
 
   const amendments = relevant
     .filter((r) => (r.title ?? "") === shortestTitle)
-    .flatMap((r) => parseAmendments(r.text!, r.source_url!, r.section_number ?? null));
+    .flatMap((r) => [
+      ...parseAmendments(r.text!, r.source_url!, r.section_number ?? null),
+      ...parseStateAmendments(r.text!, r.source_url!, r.section_number ?? null),
+    ]);
 
   // One amending Act usually touches many sections, each with its own
   // footnote. Collapse to one entry per (year, amending Act) so the timeline

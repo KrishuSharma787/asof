@@ -11,12 +11,20 @@ import { actNameWithoutYear } from "./actName";
 // searchIndianKanoon) rather than raising this alone, but the higher cap
 // also meaningfully broadens general coverage.
 //
-// Settled at 8: at 18 the synthesis prompt grew large enough that Gemini
-// 504'd on it repeatedly, and even 12 left a full lookup at ~67s, over the
-// 60s serverless ceiling. Because results are ranked by citation count and
-// Supreme Court hits are merged first, trimming the tail drops the least
-// authoritative results, not the landmark ones.
-export const MAX_JUDGMENTS = 8;
+// Was settled at 8 when 18/12 pushed Gemini past its 60s ceiling -- but that
+// was before gemini.ts's TOTAL_SOURCE_BUDGET existed, when every judgment
+// still got the full, fixed EXCERPT_CHAR_LIMIT regardless of how many were
+// retrieved, so the prompt grew unbounded with this constant. Now the
+// budget is shared and divided by source count (budgetPerSource), so
+// raising this trades a smaller per-judgment excerpt window for more
+// candidates, not a bigger prompt -- confirmed against the same reported
+// case (IPC) that total prompt size stayed in the same ~30-40k range at 12
+// as it was at 8. Raised because a fixed 8 was under-including genuine
+// landmark judgments once buildQuery started surfacing them reliably: with
+// citation-ranking now actually working, there are regularly more than 8
+// judgments in a well-litigated Act's candidate pool that a court has
+// genuinely construed, not merely cited in passing.
+export const MAX_JUDGMENTS = 12;
 
 export const TRUSTED_DOMAINS = [
   "indiankanoon.org",

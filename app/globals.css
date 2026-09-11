@@ -28,6 +28,7 @@
   --color-brand-green-soft: #7cebcb;
   --color-brand-warn: #c37d0d;
   --color-brand-error: #d45656;
+  --color-brand-tag: #3772cf;
 
   /* Darkened text-contrast variants of brand-green/-warn/-error: the raw
      DESIGN.md tones don't clear 4.5:1 contrast on white/tinted backgrounds
@@ -62,6 +63,7 @@
   --color-brand-green-soft: var(--color-brand-green-soft);
   --color-brand-warn: var(--color-brand-warn);
   --color-brand-error: var(--color-brand-error);
+  --color-brand-tag: var(--color-brand-tag);
 
   --color-brand-green-text: var(--color-brand-green-text);
   --color-brand-warn-text: var(--color-brand-warn-text);

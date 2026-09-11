@@ -121,14 +121,14 @@ export function AmendmentTimeline({ entries, judgments }: AmendmentTimelineProps
                     y1={AXIS_Y}
                     x2={x(bucket.year)}
                     y2={AXIS_Y + 8 + stackStep(bucket.amendments.length)}
-                    stroke="var(--color-brand-warn-text)"
+                    stroke="var(--color-brand-tag)"
                     strokeWidth="1"
                   />
                   <circle
                     cx={x(bucket.year)}
                     cy={AXIS_Y + 10 + stackStep(bucket.amendments.length)}
                     r={bucket.amendments.length > 1 ? 4 : 3}
-                    fill="var(--color-brand-warn-text)"
+                    fill="var(--color-brand-tag)"
                   />
                   {bucket.amendments.length > 2 && (
                     <text
@@ -154,7 +154,7 @@ export function AmendmentTimeline({ entries, judgments }: AmendmentTimelineProps
           Judgments
         </span>
         <span className="inline-flex items-center gap-2">
-          <span className="inline-block h-2 w-2 rounded-full bg-brand-warn-text" />
+          <span className="inline-block h-2 w-2 rounded-full bg-brand-tag" />
           Amendments
         </span>
       </div>
