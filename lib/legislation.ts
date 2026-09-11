@@ -361,12 +361,12 @@ export async function fetchActAmendments(
   const rows = await loadRows();
   if (!rows) return [];
 
-  const targetAct = normalizeActName(actNameWithoutYear(actName));
+  const targetAct = actNameTokens(actNameWithoutYear(actName));
   const targetSection = section ? normalizeSection(baseSectionNumber(section)) : null;
 
   const relevant = rows.filter((row) => {
     if (!row.text || !row.source_url) return false;
-    if (!normalizeActName(row.title ?? "").includes(targetAct)) return false;
+    if (!actNameMatches(row.title ?? "", targetAct)) return false;
     if (targetSection && normalizeSection(row.section_number ?? "") !== targetSection) return false;
     return true;
   });
@@ -410,11 +410,41 @@ function baseSectionNumber(section: string): string {
   return idx === -1 ? section : section.slice(0, idx);
 }
 
-function normalizeActName(actName: string): string {
-  return actName
-    .toLowerCase()
-    .replace(/^the\s+/, "")
-    .replace(/[^a-z0-9]/g, "");
+// A plain substring check after stripping punctuation only matches when the
+// query's words appear in the SAME ORDER as the official title. That broke
+// on "Civil Procedure Code" against the dataset's actual "The Code of Civil
+// Procedure, 1908" -- confirmed live: the query's word order ("Civil
+// Procedure Code") isn't a substring of the title's ("Code of Civil
+// Procedure") even though every word matches, so the Act-level lookup found
+// nothing and the amendment timeline silently came back empty despite CPC's
+// well-known amendment history. Comparing word SETS instead of a
+// concatenated string is order-independent, so "Civil Procedure Code" and
+// "Code of Civil Procedure" match as the same three words regardless of
+// which one comes first.
+const ACT_NAME_STOPWORDS = new Set(["the", "of", "and", "an", "a", "for"]);
+
+function actNameTokens(actName: string): Set<string> {
+  return new Set(
+    actName
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length > 0 && !ACT_NAME_STOPWORDS.has(word)),
+  );
+}
+
+// True when every significant word in the query also appears somewhere in
+// the candidate title -- e.g. query tokens {civil, procedure, code} against
+// title tokens {code, of, civil, procedure, 1908} (stopwords and the year
+// don't need to match). Multiple titles can still satisfy this at once (a
+// short Act name is also a substring of its own amendment Acts' titles);
+// callers already break that tie by preferring the shortest matching title.
+function actNameMatches(rowTitle: string, queryTokens: Set<string>): boolean {
+  if (queryTokens.size === 0) return false;
+  const rowTokens = actNameTokens(rowTitle);
+  for (const token of queryTokens) {
+    if (!rowTokens.has(token)) return false;
+  }
+  return true;
 }
 
 // unwrapBrackets pairs brackets within a single chunk's raw text, but a
@@ -498,15 +528,16 @@ export async function fetchStatutoryText(
 
   const targetSection = normalizeSection(baseSectionNumber(section));
   // "Information Technology Act" should match "The Information Technology
-  // Act, 2000", so compare on an alphanumeric-only reduction and allow the
-  // stored title to merely contain the query. Indian Acts also vary on
-  // hyphenation ("Income-tax" vs "Income Tax"), which this collapses too.
-  const targetAct = normalizeActName(actNameWithoutYear(actName));
+  // Act, 2000", and "Civil Procedure Code" should match "The Code of Civil
+  // Procedure, 1908" despite the reversed word order -- word-set comparison
+  // handles both, plus the hyphenation variance ("Income-tax" vs "Income
+  // Tax") that word-splitting on non-alphanumerics already collapses.
+  const targetAct = actNameTokens(actNameWithoutYear(actName));
 
   const matches = rows.filter((row) => {
     if (!row.text || !row.source_url) return false;
     if (normalizeSection(row.section_number ?? "") !== targetSection) return false;
-    return normalizeActName(row.title ?? "").includes(targetAct);
+    return actNameMatches(row.title ?? "", targetAct);
   });
   if (matches.length === 0) return null;
 
