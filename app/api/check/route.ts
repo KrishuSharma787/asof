@@ -21,6 +21,18 @@ import type { InterpretationResult } from "@/types/schema";
 // substitute for those.
 export const maxDuration = 60;
 
+// Kept under maxDuration, not equal to it: whatever's left of this budget
+// when synthesizeInterpretation is called (after retrieval, which runs
+// first) still has to leave room for validation/serialization and Vercel's
+// own request/response overhead after Gemini returns. Confirmed live this
+// isn't theoretical -- ordinary requests during the ongoing Gemini capacity
+// outage this session measured 53-63s wall-clock in dev, where maxDuration
+// isn't enforced; deployed, the same request would be killed by the
+// platform at 60s with no response at all. synthesizeInterpretation uses
+// this to shrink (and eventually stop) its own per-model attempts so the
+// route can never run past it, however many models it falls through.
+const ROUTE_TIME_BUDGET_MS = 55000;
+
 // Bump whenever CheckResponseBody's shape OR the synthesis rules that produce
 // it change, so a stale entry from before the change is never served. Cached
 // answers are as version-bound as the schema: a prompt fix that corrects a
@@ -61,6 +73,7 @@ function buildEmptyResult(actName: string, section: string | null): Interpretati
 }
 
 export async function POST(req: NextRequest) {
+  const requestStart = Date.now();
   let body: CheckRequestBody;
   try {
     body = await req.json();
@@ -142,6 +155,7 @@ export async function POST(req: NextRequest) {
         statutoryText && statutoryTextSourceUrl
           ? { text: statutoryText, sourceUrl: statutoryTextSourceUrl }
           : null,
+        Math.max(0, ROUTE_TIME_BUDGET_MS - (Date.now() - requestStart)),
       );
     } catch (err) {
       console.error("[api/check] Gemini synthesis failed:", err);

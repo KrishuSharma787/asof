@@ -56,7 +56,34 @@ const STATUTE_BOOK_CHAR_LIMIT = 2500;
 // own. 20s is still generous against the ~2s responses seen from healthy
 // models, and a model that hasn't answered in 20s is not one worth waiting
 // out further when 5 others are queued behind it.
-const REQUEST_TIMEOUT_MS = 20000;
+//
+// This is a per-attempt CEILING, not a guarantee -- synthesizeInterpretation
+// also takes the caller's actual remaining time budget and uses whichever is
+// smaller. Watching the fallback chain live during this session's Gemini
+// outage exposed a second problem a shared budget alone doesn't fix: with a
+// 20s ceiling, only 2 of the 6 models fit inside a ~55s budget before it
+// runs out, and the two that get a turn are always 3.7-flash and 3.8-flash
+// -- the newest, most contested models, and exactly the two seen failing
+// almost every time this session. The -lite/-latest variants at the end of
+// MODELS, which the comment above already notes answered in under 2s during
+// a past outage that took the mainline models down together, never got a
+// turn at all -- confirmed live: every request during this outage stopped
+// with "time budget exhausted" before reaching a third model. Lowered from
+// 20000 so more of the list fits inside one budget; still comfortably above
+// the ~2s a healthy model actually takes, so this only shortens how long a
+// truly stuck model is waited on, never how long a working one gets.
+const REQUEST_TIMEOUT_MS = 10000;
+// Below this much remaining budget, a fresh model attempt isn't worth
+// starting -- and below 10000 it can't be started at all: confirmed live
+// this is a hard floor the SDK itself enforces, not just a design choice.
+// An early version of this budget-shrinking used a 3000ms floor, and once
+// the 6th model in the chain was reached with ~8s left, the SDK rejected
+// the call outright with "Manually set deadline 8s is too short. Minimum
+// allowed deadline is 10s" (INVALID_ARGUMENT) -- an immediate client-side
+// rejection, not even a real attempt against Gemini. 10000 is both the
+// SDK's floor and comfortably above the ~2s a healthy model actually
+// takes, so nothing above this floor is ever cut short.
+const MIN_ATTEMPT_BUDGET_MS = 10000;
 
 const RESPONSE_JSON_SCHEMA = z.toJSONSchema(InterpretationResultSchema);
 
@@ -229,6 +256,11 @@ export async function synthesizeInterpretation(
   amendmentSources: RetrievedJudgment[],
   statuteBookSources: RetrievedJudgment[] = [],
   statutoryText: StatutoryTextInput | null = null,
+  // Time left in the route's own budget when this call started (see
+  // ROUTE_TIME_BUDGET_MS in app/api/check/route.ts), not a fixed constant --
+  // retrieval already spent some of the 60s ceiling before this function was
+  // ever called, and the model loop below must fit inside whatever's left.
+  budgetMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY not set");
@@ -246,7 +278,7 @@ export async function synthesizeInterpretation(
     `[gemini] prompt chars: ${userPrompt.length} (statuteBook=${statuteBookSources.length} judgments=${sources.length} amendments=${amendmentSources.length})`,
   );
 
-  const call = (model: string) =>
+  const call = (model: string, timeoutMs: number) =>
     ai.models.generateContent({
       model,
       contents: userPrompt,
@@ -255,17 +287,32 @@ export async function synthesizeInterpretation(
         responseMimeType: "application/json",
         responseJsonSchema: RESPONSE_JSON_SCHEMA,
         temperature: 0,
-        httpOptions: { timeout: REQUEST_TIMEOUT_MS },
+        httpOptions: { timeout: timeoutMs },
       },
     });
 
   let response: Awaited<ReturnType<typeof call>> | undefined;
   let lastKind: GeminiFailureKind = "other";
   let lastMessage = "";
+  let attempted = false;
+
+  // deadline, not a per-model constant: each attempt gets whichever is
+  // smaller of REQUEST_TIMEOUT_MS and whatever's actually left of the
+  // caller's budget, so the loop can never run the route past its own 60s
+  // maxDuration no matter how many models it falls through.
+  const deadline = Date.now() + budgetMs;
 
   for (const model of MODELS) {
+    const remaining = deadline - Date.now();
+    if (remaining < MIN_ATTEMPT_BUDGET_MS) {
+      console.error(
+        `[gemini] time budget exhausted (${remaining}ms left) -- stopping before ${model}`,
+      );
+      break;
+    }
+    attempted = true;
     try {
-      response = await call(model);
+      response = await call(model, Math.min(REQUEST_TIMEOUT_MS, remaining));
       break;
     } catch (err) {
       lastKind = classifyFailure(err);
@@ -281,7 +328,10 @@ export async function synthesizeInterpretation(
   }
 
   if (!response) {
-    throw new GeminiError(lastKind, lastMessage || "All Gemini models failed");
+    throw new GeminiError(
+      attempted ? lastKind : "transient",
+      attempted ? lastMessage || "All Gemini models failed" : "No time budget left to call Gemini",
+    );
   }
 
   const text = response.text;

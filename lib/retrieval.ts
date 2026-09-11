@@ -139,8 +139,9 @@ interface IndianKanoonDocSummary {
 async function ikSearch(
   apiKey: string,
   query: string,
+  pagenum = 0,
 ): Promise<IndianKanoonDocSummary[]> {
-  const searchUrl = `https://api.indiankanoon.org/search/?formInput=${encodeURIComponent(query)}&pagenum=0`;
+  const searchUrl = `https://api.indiankanoon.org/search/?formInput=${encodeURIComponent(query)}&pagenum=${pagenum}`;
   const searchRes = await fetchWithTimeout(searchUrl, {
     method: "POST",
     headers: { Authorization: `Token ${apiKey}` },
@@ -174,14 +175,32 @@ async function searchIndianKanoon(
   // a statutory section is cited by thousands of cases, far more than any
   // single judgment, so an Act-level query came back with eight statute pages
   // and zero judgments.
-  const [generalDocs, supremeCourtDocs] = await Promise.all([
-    ikSearch(apiKey, `${query} doctypes:judgments`),
-    ikSearch(apiKey, `${query} doctypes:supremecourt`).catch(() => []),
-  ]);
+  // A second page per search, not just the first: IK's own relevance
+  // ordering within doctypes:supremecourt can bury a landmark case well past
+  // its top 10 -- confirmed live for Vineeta Sharma v. Rakesh Sharma (2020),
+  // the case that settled whether the 2005 amendment to Hindu Succession Act
+  // s.6 applies retrospectively: 245 citations, the second-most-cited result
+  // for this exact query, sitting at position 17 (page 2) while the general
+  // query's own page 1 was full of near-zero-citation FIR-quashing orders.
+  // Doubling the fetch still only ever ADDS candidates to the pool the
+  // citation-count ranking below already sorts through -- it can't push a
+  // genuinely more-cited page-1 result out.
+  const [generalDocs, generalDocsPage2, supremeCourtDocs, supremeCourtDocsPage2] =
+    await Promise.all([
+      ikSearch(apiKey, `${query} doctypes:judgments`),
+      ikSearch(apiKey, `${query} doctypes:judgments`, 1).catch(() => []),
+      ikSearch(apiKey, `${query} doctypes:supremecourt`).catch(() => []),
+      ikSearch(apiKey, `${query} doctypes:supremecourt`, 1).catch(() => []),
+    ]);
 
   const seenTids = new Set<number>();
   const mergedDocs: IndianKanoonDocSummary[] = [];
-  for (const doc of [...supremeCourtDocs, ...generalDocs]) {
+  for (const doc of [
+    ...supremeCourtDocs,
+    ...supremeCourtDocsPage2,
+    ...generalDocs,
+    ...generalDocsPage2,
+  ]) {
     if (seenTids.has(doc.tid)) continue;
     seenTids.add(doc.tid);
     mergedDocs.push(doc);
