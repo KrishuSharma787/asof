@@ -48,3 +48,6 @@ next-env.d.ts
 !package.json
 !package-lock.json
 !tsconfig.json
+
+.vercel
+.env*
