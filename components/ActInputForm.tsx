@@ -7,6 +7,52 @@ interface ActInputFormProps {
   loading: boolean;
 }
 
+function BracketedField({
+  id,
+  label,
+  optional,
+  value,
+  onChange,
+  placeholder,
+  required,
+  disabled,
+}: {
+  id: string;
+  label: string;
+  optional?: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  required?: boolean;
+  disabled: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor={id} className="text-body-sm font-medium text-charcoal">
+        {label} {optional && <span className="text-steel">(optional)</span>}
+      </label>
+      <div className="flex items-center gap-2 border border-hairline bg-canvas px-3 focus-within:border-2 focus-within:border-brand-green focus-within:px-[11px]">
+        <span aria-hidden="true" className="text-steel">
+          [
+        </span>
+        <input
+          id={id}
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          required={required}
+          disabled={disabled}
+          className="h-10 flex-1 bg-transparent text-body-md text-ink outline-none placeholder:text-muted disabled:text-muted"
+        />
+        <span aria-hidden="true" className="text-steel">
+          ]
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function ActInputForm({ onSubmit, loading }: ActInputFormProps) {
   const [actName, setActName] = useState("");
   const [section, setSection] = useState("");
@@ -19,42 +65,38 @@ export function ActInputForm({ onSubmit, loading }: ActInputFormProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4 sm:flex-row sm:items-end">
-      <div className="flex flex-1 flex-col gap-2">
-        <label htmlFor="actName" className="text-body-sm font-medium text-charcoal">
-          Act name
-        </label>
-        <input
-          id="actName"
-          type="text"
-          value={actName}
-          onChange={(e) => setActName(e.target.value)}
-          placeholder="e.g. Information Technology Act, 2000"
-          required
-          disabled={loading}
-          className="h-10 rounded-md border border-hairline bg-canvas px-3 text-body-md text-ink placeholder:text-muted outline-none focus:border-2 focus:border-brand-green disabled:bg-surface disabled:text-muted"
-        />
-      </div>
-      <div className="flex flex-col gap-2 sm:w-40">
-        <label htmlFor="section" className="text-body-sm font-medium text-charcoal">
-          Section <span className="text-steel">(optional)</span>
-        </label>
-        <input
-          id="section"
-          type="text"
-          value={section}
-          onChange={(e) => setSection(e.target.value)}
-          placeholder="e.g. 66A"
-          disabled={loading}
-          className="h-10 rounded-md border border-hairline bg-canvas px-3 text-body-md text-ink placeholder:text-muted outline-none focus:border-2 focus:border-brand-green disabled:bg-surface disabled:text-muted"
-        />
-      </div>
+    <form
+      onSubmit={handleSubmit}
+      className="mx-auto flex w-full max-w-lg flex-col gap-5 border border-hairline p-6"
+    >
+      <h2 className="text-body-md font-medium text-ink">What law are you researching?</h2>
+
+      <BracketedField
+        id="actName"
+        label="Act"
+        value={actName}
+        onChange={setActName}
+        placeholder="e.g. Information Technology Act, 2000"
+        required
+        disabled={loading}
+      />
+
+      <BracketedField
+        id="section"
+        label="Section"
+        optional
+        value={section}
+        onChange={setSection}
+        placeholder="e.g. 66A"
+        disabled={loading}
+      />
+
       <button
         type="submit"
         disabled={loading || !actName.trim()}
-        className="h-10 shrink-0 rounded-full bg-primary px-5 text-body-sm font-medium text-on-primary transition-colors disabled:bg-hairline disabled:text-muted"
+        className="self-end bg-primary px-5 py-2 text-body-sm font-medium text-on-primary transition-colors disabled:bg-hairline disabled:text-muted"
       >
-        {loading ? "Checking…" : "Check status"}
+        {loading ? "Exploring…" : "Explore →"}
       </button>
     </form>
   );

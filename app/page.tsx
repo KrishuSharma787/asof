@@ -71,12 +71,11 @@ export default function Home() {
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-6 py-10">
-      <div>
+      <div className="text-center">
         <h1 className="text-heading-2 text-ink">asof</h1>
-        <p className="mt-2 max-w-[65ch] text-subtitle text-steel">
-          Enter an Act (and optionally a section) to see how Indian courts have interpreted it —
-          including cases where a judgment changed its practical meaning without any formal
-          amendment.
+        <p className="text-subtitle text-ink">Know the law as of.</p>
+        <p className="mx-auto mt-4 max-w-[55ch] text-body-md text-steel">
+          A time-aware legal research engine for legislation and judicial interpretation.
         </p>
       </div>
 

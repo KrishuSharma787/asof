@@ -3,42 +3,55 @@
 /*
   Tokens transcribed from DESIGN.md (Mintlify design analysis). Only the
   subset this app actually uses — no marketing/hero/pricing tokens.
-  DESIGN.md documents no dark-mode palette ("Known Gaps"), so this commits
-  to a single light theme rather than guessing one.
+
+  A single committed DARK theme, not a toggle — DESIGN.md documents a few
+  dark-surface anchors (canvas-dark, on-dark, on-dark-muted, hairline-dark,
+  surface-code) but flags in "Known Gaps" that a full dark palette (the
+  6-step ink/charcoal/slate/steel/stone/muted text hierarchy this app
+  actually uses) was never shipped. The values below extend those anchors
+  rather than inventing an unrelated palette, and every non-anchor value
+  (hairline, hairline-soft, muted, the three -text status colors, brand-tag)
+  was picked by checking its actual WCAG contrast ratio against canvas
+  (#0a0a0a) -- not eyeballed. Borders target ~3:1 (the non-text/UI-boundary
+  threshold); body-sized text targets ~4.5:1. --color-hairline in particular
+  needed real verification: DESIGN.md's own hairline-dark (#1f1f1f) is only
+  1.2:1 against #0a0a0a and would have made this app's boxed input --
+  literally the point of this design -- nearly invisible.
 */
 :root {
-  --color-canvas: #ffffff;
-  --color-surface: #f7f7f7;
-  --color-surface-soft: #fafafa;
-  --color-hairline: #e5e5e5;
-  --color-hairline-soft: #ededed;
+  --color-canvas: #0a0a0a;
+  --color-surface: #1c1c1e;
+  --color-surface-soft: #141416;
+  --color-hairline: #666668;
+  --color-hairline-soft: #333335;
 
-  --color-ink: #0a0a0a;
-  --color-charcoal: #1c1c1e;
-  --color-slate: #3a3a3c;
-  --color-steel: #5a5a5c;
-  --color-stone: #888888;
-  --color-muted: #a8a8aa;
+  --color-ink: #ffffff;
+  --color-charcoal: #d4d4d6;
+  --color-slate: #b3b3b3;
+  --color-steel: #8a8a8e;
+  --color-stone: #6a6a6e;
+  --color-muted: #5c5c5e;
 
-  --color-primary: #0a0a0a;
-  --color-on-primary: #ffffff;
+  --color-primary: #ffffff;
+  --color-on-primary: #0a0a0a;
 
   --color-brand-green: #00d4a4;
   --color-brand-green-deep: #00b48a;
   --color-brand-green-soft: #7cebcb;
   --color-brand-warn: #c37d0d;
   --color-brand-error: #d45656;
-  --color-brand-tag: #3772cf;
+  --color-brand-tag: #6fa0e6;
 
-  /* Darkened text-contrast variants of brand-green/-warn/-error: the raw
-     DESIGN.md tones don't clear 4.5:1 contrast on white/tinted backgrounds
-     at badge/caption sizes, so these carry status/confidence text while the
-     raw brand-* tones stay reserved for accent surfaces (focus rings,
-     selection) per DESIGN.md. Named after the token they extend, not as a
-     separate "accent" family, so the DESIGN.md lineage stays traceable. */
-  --color-brand-green-text: #00805c;
-  --color-brand-warn-text: #9c6109;
-  --color-brand-error-text: #b84a4a;
+  /* Contrast-safe variants of brand-green/-warn/-error for status/confidence
+     text at badge/caption sizes. On the light theme these were DARKENED
+     versions of the raw DESIGN.md tones (for contrast on white); on this
+     dark theme they're BRIGHTENED instead -- the raw tones themselves stay
+     reserved for accent surfaces (focus rings, selection) per DESIGN.md.
+     Named after the token they extend, not as a separate "accent" family,
+     so the DESIGN.md lineage stays traceable. */
+  --color-brand-green-text: #3ddba8;
+  --color-brand-warn-text: #e0a838;
+  --color-brand-error-text: #e57373;
 }
 
 @theme inline {
@@ -69,7 +82,14 @@
   --color-brand-warn-text: var(--color-brand-warn-text);
   --color-brand-error-text: var(--color-brand-error-text);
 
-  --font-sans: var(--font-inter);
+  /* font-sans repointed to Geist Mono, not Inter: this app's whole-app
+     monospace terminal aesthetic is a deliberate departure from DESIGN.md's
+     own "Inter for prose, Geist Mono surgically for code" pairing rule --
+     since virtually every element here uses the Tailwind default (font-sans)
+     rather than opting into Inter explicitly, this one line re-themes the
+     entire app without per-component edits. Inter stays loaded (font-inter
+     is still available) but is no longer the default. */
+  --font-sans: var(--font-geist-mono);
   --font-mono: var(--font-geist-mono);
 
   --radius-xs: 4px;
@@ -122,7 +142,11 @@ body {
    scrollbars from the palette rather than leaving browser defaults. */
 ::selection {
   background: var(--color-brand-green-soft);
-  color: var(--color-ink);
+  /* Not --color-ink: on the dark theme ink is white, which would put white
+     text on light-mint selection. on-primary is semantically "the color
+     that contrasts with a light surface" -- on this theme that's the dark
+     tone, which is what selected text actually needs here. */
+  color: var(--color-on-primary);
 }
 
 :focus-visible {

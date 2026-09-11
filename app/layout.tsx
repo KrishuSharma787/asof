@@ -23,8 +23,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${inter.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col font-sans">
-        <Disclaimer />
         {children}
+        <Disclaimer />
       </body>
     </html>
   );
