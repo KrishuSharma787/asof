@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Indian Act Status Checker",
+  title: "asof — Indian Act Status Checker",
   description:
     "Checks how Indian courts have interpreted an Act or section, grounded in retrieved judgments.",
 };

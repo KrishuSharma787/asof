@@ -72,7 +72,7 @@ export default function Home() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-6 py-10">
       <div>
-        <h1 className="text-heading-2 text-ink">Indian Act Status &amp; Interpretation Checker</h1>
+        <h1 className="text-heading-2 text-ink">asof</h1>
         <p className="mt-2 max-w-[65ch] text-subtitle text-steel">
           Enter an Act (and optionally a section) to see how Indian courts have interpreted it —
           including cases where a judgment changed its practical meaning without any formal
