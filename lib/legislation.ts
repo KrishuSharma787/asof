@@ -452,17 +452,17 @@ function parseStateAmendments(
   return out;
 }
 
-// Whole-Act history: every section of the Act is already in memory, so the
-// footnotes across all of them add up to the Act's real amendment record.
-// This is what makes an Act-level query (no section given) substantive
-// instead of returning a single recent bill scraped off a blog.
-export async function fetchActAmendments(
+// fetchActAmendments and fetchStatutoryText both start the same way: resolve
+// a free-text query down to "the rows for one specific Act" (optionally
+// scoped to one section), matching by word-set (actNameMatches) and
+// preferring the shortest matching title as the base Act over one of its own
+// amendment Acts (see actNameMatches' own comment for why "shortest" is the
+// right tie-break). Shared here rather than duplicated in both.
+function findCanonicalRows(
+  rows: LegislationRow[],
   actName: string,
-  section: string | null = null,
-): Promise<ExtractedAmendment[]> {
-  const rows = await loadRows();
-  if (!rows) return [];
-
+  section: string | null,
+): LegislationRow[] {
   const targetAct = actNameTokens(actNameWithoutYear(actName));
   const targetSection = section ? normalizeSection(baseSectionNumber(section)) : null;
 
@@ -478,12 +478,27 @@ export async function fetchActAmendments(
     .map((r) => r.title ?? "")
     .sort((a, b) => a.length - b.length)[0];
 
-  const amendments = relevant
-    .filter((r) => (r.title ?? "") === shortestTitle)
-    .flatMap((r) => [
-      ...parseAmendments(r.text!, r.source_url!, r.section_number ?? null),
-      ...parseStateAmendments(r.text!, r.source_url!, r.section_number ?? null),
-    ]);
+  return relevant.filter((r) => (r.title ?? "") === shortestTitle);
+}
+
+// Whole-Act history: every section of the Act is already in memory, so the
+// footnotes across all of them add up to the Act's real amendment record.
+// This is what makes an Act-level query (no section given) substantive
+// instead of returning a single recent bill scraped off a blog.
+export async function fetchActAmendments(
+  actName: string,
+  section: string | null = null,
+): Promise<ExtractedAmendment[]> {
+  const rows = await loadRows();
+  if (!rows) return [];
+
+  const relevant = findCanonicalRows(rows, actName, section);
+  if (relevant.length === 0) return [];
+
+  const amendments = relevant.flatMap((r) => [
+    ...parseAmendments(r.text!, r.source_url!, r.section_number ?? null),
+    ...parseStateAmendments(r.text!, r.source_url!, r.section_number ?? null),
+  ]);
 
   // One amending Act usually touches many sections, each with its own
   // footnote. Collapse to one entry per (year, amending Act) so the timeline
@@ -631,30 +646,18 @@ export async function fetchStatutoryText(
   const rows = await loadRows();
   if (!rows) return null;
 
-  const targetSection = normalizeSection(baseSectionNumber(section));
   // "Information Technology Act" should match "The Information Technology
   // Act, 2000", and "Civil Procedure Code" should match "The Code of Civil
   // Procedure, 1908" despite the reversed word order -- word-set comparison
-  // handles both, plus the hyphenation variance ("Income-tax" vs "Income
-  // Tax") that word-splitting on non-alphanumerics already collapses.
-  const targetAct = actNameTokens(actNameWithoutYear(actName));
-
-  const matches = rows.filter((row) => {
-    if (!row.text || !row.source_url) return false;
-    if (normalizeSection(row.section_number ?? "") !== targetSection) return false;
-    return actNameMatches(row.title ?? "", targetAct);
-  });
-  if (matches.length === 0) return null;
-
-  // Prefer the shortest matching title: a query for "Income Tax Act" should
-  // land on "The Income-tax Act, 1961", not "The Income Tax (Amendment) Act".
-  const bestTitle = matches
-    .map((m) => m.title ?? "")
-    .sort((a, b) => a.length - b.length)[0];
-
-  const chunks = matches
-    .filter((m) => (m.title ?? "") === bestTitle)
-    .sort((a, b) => (a.chunk_id ?? "").localeCompare(b.chunk_id ?? "", undefined, { numeric: true }));
+  // (findCanonicalRows -> actNameMatches) handles both, plus the
+  // hyphenation variance ("Income-tax" vs "Income Tax") that word-splitting
+  // on non-alphanumerics already collapses. It also prefers the shortest
+  // matching title: a query for "Income Tax Act" should land on "The
+  // Income-tax Act, 1961", not "The Income Tax (Amendment) Act".
+  const chunks = findCanonicalRows(rows, actName, section).sort((a, b) =>
+    (a.chunk_id ?? "").localeCompare(b.chunk_id ?? "", undefined, { numeric: true }),
+  );
+  if (chunks.length === 0) return null;
 
   const first = chunks[0];
   const sectionNumber = first.section_number ?? section;

@@ -202,32 +202,8 @@ async function searchIndianKanoon(
   // at Indian Kanoon simultaneously started tripping the per-request timeout,
   // and a timeout here fails the whole IK path over to the weaker Tavily
   // fallback, quietly costing us the better sources.
-  const fullDocs = await mapWithConcurrency(
-    topDocs,
-    IK_FETCH_CONCURRENCY,
-    async (doc): Promise<RetrievedJudgment | null> => {
-      try {
-        const docUrl = `https://api.indiankanoon.org/doc/${doc.tid}/`;
-        const docRes = await fetchWithTimeout(docUrl, {
-          method: "POST",
-          headers: { Authorization: `Token ${apiKey}` },
-        });
-        if (!docRes.ok) return null;
-        const docJson = await docRes.json();
-        const rawText: string = typeof docJson?.doc === "string" ? docJson.doc : "";
-        const text = stripHtml(rawText);
-        if (!text) return null;
-        return {
-          title: docJson?.title ?? doc.title ?? "Untitled judgment",
-          court: docJson?.docsource ?? doc.docsource ?? "Unknown court",
-          url: `https://indiankanoon.org/doc/${doc.tid}/`,
-          text,
-          source: "indiankanoon",
-        };
-      } catch {
-        return null;
-      }
-    },
+  const fullDocs = await mapWithConcurrency(topDocs, IK_FETCH_CONCURRENCY, (doc) =>
+    fetchIkDoc(apiKey, doc, "Unknown court"),
   );
 
   return fullDocs.filter((d): d is RetrievedJudgment => d !== null);
@@ -501,15 +477,7 @@ export async function retrieveStatutoryTextFallback(
   const section = sanitizeInput(rawSection);
 
   try {
-    const query = `"${actName}" ${section}`;
-    const searchUrl = `https://api.indiankanoon.org/search/?formInput=${encodeURIComponent(query)}&pagenum=0`;
-    const searchRes = await fetchWithTimeout(searchUrl, {
-      method: "POST",
-      headers: { Authorization: `Token ${apiKey}` },
-    });
-    if (!searchRes.ok) return null;
-    const searchJson = await searchRes.json();
-    const docs: IndianKanoonDocSummary[] = Array.isArray(searchJson?.docs) ? searchJson.docs : [];
+    const docs = await ikSearch(apiKey, `"${actName}" ${section}`);
     if (docs.length === 0) return null;
 
     // Only accept a result that looks like a bare statutory-text page. This
@@ -523,22 +491,8 @@ export async function retrieveStatutoryTextFallback(
     const bareTextDoc = docs.find((d) => /^section\s+\S+\s+in\s+/i.test(d.title ?? ""));
     if (!bareTextDoc) return null;
 
-    const docUrl = `https://api.indiankanoon.org/doc/${bareTextDoc.tid}/`;
-    const docRes = await fetchWithTimeout(docUrl, {
-      method: "POST",
-      headers: { Authorization: `Token ${apiKey}` },
-    });
-    if (!docRes.ok) return null;
-    const docJson = await docRes.json();
-    const rawText: string = typeof docJson?.doc === "string" ? docJson.doc : "";
-    const text = stripHtml(rawText);
-    if (!text) return null;
-
-    return {
-      text,
-      court: docJson?.docsource ?? bareTextDoc.docsource ?? "Indian Kanoon",
-      url: `https://indiankanoon.org/doc/${bareTextDoc.tid}/`,
-    };
+    const doc = await fetchIkDoc(apiKey, bareTextDoc, "Indian Kanoon");
+    return doc ? { text: doc.text, court: doc.court, url: doc.url } : null;
   } catch (err) {
     console.error("[retrieval] statutory-text fallback failed:", err);
     return null;
