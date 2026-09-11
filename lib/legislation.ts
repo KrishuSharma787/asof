@@ -161,6 +161,45 @@ function cleanDatasetTitle(title: string): string {
     .replace(/,\s*$/, "");
 }
 
+// A generic query can match several genuinely DIFFERENT Acts that merely
+// share a couple of common words, not just a base Act and its own
+// amendment Acts. Confirmed live: "evidence act" (tokens {evidence, act})
+// matches 9 titles spanning multiple unrelated, historically separate
+// Acts -- and by raw title length, the SHORTEST was "The Bankers Books
+// Evidence Act, 1891" (a narrow, specialized Act), beating "The Indian
+// Evidence Act, 1872" (the actual general law of evidence, and what
+// "evidence act" obviously means) purely because the real Act's title
+// carries a longer citation/repeal-annotation suffix. That's not a missed
+// enhancement, it's an actively wrong answer.
+//
+// Section count on record is a far more reliable signal of "which of
+// these candidates is the real, major Act": confirmed live, "The Indian
+// Evidence Act, 1872" has 175 distinct sections in the snapshot; every
+// other "evidence act" candidate has 23 or fewer, most in single digits.
+// A comprehensive, significant Act genuinely has far more provisions on
+// record than an obscure historical predecessor or a narrow specialized
+// Act that happens to share words in its title. This still correctly
+// separates a base Act from its own same-named amendment Acts too (the
+// original purpose of this tie-break): a base Act's section count
+// dwarfs a short amendment Act's by the same logic, without needing the
+// length-based fallback to do that work. Title length remains only as
+// the tiebreaker for the rare case of an exact section-count tie.
+function pickMostComprehensiveTitle(rows: LegislationRow[]): string {
+  const sectionsByTitle = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const title = row.title ?? "";
+    if (!sectionsByTitle.has(title)) sectionsByTitle.set(title, new Set());
+    sectionsByTitle.get(title)!.add(row.section_number ?? "");
+  }
+
+  const titles = [...sectionsByTitle.keys()];
+  titles.sort((a, b) => {
+    const bySectionCount = sectionsByTitle.get(b)!.size - sectionsByTitle.get(a)!.size;
+    return bySectionCount !== 0 ? bySectionCount : a.length - b.length;
+  });
+  return titles[0];
+}
+
 export async function resolveActName(rawActName: string): Promise<string> {
   const rows = await loadRows();
   if (!rows) return rawActName;
@@ -168,17 +207,10 @@ export async function resolveActName(rawActName: string): Promise<string> {
   const queryTokens = actNameTokens(actNameWithoutYear(rawActName));
   if (queryTokens.size === 0) return rawActName;
 
-  const titles = new Set<string>();
-  for (const row of rows) {
-    if (row.title && actNameMatches(row.title, queryTokens)) titles.add(row.title);
-  }
-  if (titles.size === 0) return rawActName;
+  const matchingRows = rows.filter((row) => row.title && actNameMatches(row.title, queryTokens));
+  if (matchingRows.length === 0) return rawActName;
 
-  // Same tie-break already used by fetchActAmendments/fetchStatutoryText:
-  // the shortest matching title is the base Act, not one of its amendment
-  // Acts or a longer Act that happens to share every word.
-  const best = [...titles].sort((a, b) => a.length - b.length)[0];
-  return cleanDatasetTitle(best);
+  return cleanDatasetTitle(pickMostComprehensiveTitle(matchingRows));
 }
 
 // Square brackets carry at least three different meanings in this corpus,
@@ -455,30 +487,39 @@ function parseStateAmendments(
 // fetchActAmendments and fetchStatutoryText both start the same way: resolve
 // a free-text query down to "the rows for one specific Act" (optionally
 // scoped to one section), matching by word-set (actNameMatches) and
-// preferring the shortest matching title as the base Act over one of its own
-// amendment Acts (see actNameMatches' own comment for why "shortest" is the
-// right tie-break). Shared here rather than duplicated in both.
+// preferring the most comprehensive matching title (see
+// pickMostComprehensiveTitle) as the real Act. Shared here rather than
+// duplicated in both.
+//
+// The comprehensiveness comparison has to run over EVERY section of a
+// candidate Act, before any section filter is applied -- confirmed live
+// this was a second bug alongside resolveActName's: filtering to one
+// requested section first, then comparing "how many sections does each
+// remaining candidate have", makes every candidate trivially "1 section"
+// once section-filtered, destroying the exact signal that distinguishes
+// a major Act from an obscure same-named one. Comprehensiveness is
+// decided from the Act's full row set; the section filter (when a section
+// is given) is applied only afterward, to whichever title won.
 function findCanonicalRows(
   rows: LegislationRow[],
   actName: string,
   section: string | null,
 ): LegislationRow[] {
   const targetAct = actNameTokens(actNameWithoutYear(actName));
-  const targetSection = section ? normalizeSection(baseSectionNumber(section)) : null;
 
-  const relevant = rows.filter((row) => {
-    if (!row.text || !row.source_url) return false;
-    if (!actNameMatches(row.title ?? "", targetAct)) return false;
+  const actRows = rows.filter(
+    (row) => row.text && row.source_url && actNameMatches(row.title ?? "", targetAct),
+  );
+  if (actRows.length === 0) return [];
+
+  const bestTitle = pickMostComprehensiveTitle(actRows);
+
+  const targetSection = section ? normalizeSection(baseSectionNumber(section)) : null;
+  return actRows.filter((row) => {
+    if ((row.title ?? "") !== bestTitle) return false;
     if (targetSection && normalizeSection(row.section_number ?? "") !== targetSection) return false;
     return true;
   });
-  if (relevant.length === 0) return [];
-
-  const shortestTitle = relevant
-    .map((r) => r.title ?? "")
-    .sort((a, b) => a.length - b.length)[0];
-
-  return relevant.filter((r) => (r.title ?? "") === shortestTitle);
 }
 
 // Whole-Act history: every section of the Act is already in memory, so the
@@ -555,9 +596,11 @@ export function actNameTokens(actName: string): Set<string> {
 // True when every significant word in the query also appears somewhere in
 // the candidate title -- e.g. query tokens {civil, procedure, code} against
 // title tokens {code, of, civil, procedure, 1908} (stopwords and the year
-// don't need to match). Multiple titles can still satisfy this at once (a
-// short Act name is also a substring of its own amendment Acts' titles);
-// callers already break that tie by preferring the shortest matching title.
+// don't need to match). Multiple titles can still satisfy this at once,
+// whether one is an amendment Act of another or the two are entirely
+// unrelated Acts that happen to share a couple of common words; callers
+// already break that tie by preferring the most comprehensive matching
+// title (see pickMostComprehensiveTitle).
 export function actNameMatches(rowTitle: string, queryTokens: Set<string>): boolean {
   if (queryTokens.size === 0) return false;
   const rowTokens = actNameTokens(rowTitle);
@@ -651,9 +694,11 @@ export async function fetchStatutoryText(
   // Procedure, 1908" despite the reversed word order -- word-set comparison
   // (findCanonicalRows -> actNameMatches) handles both, plus the
   // hyphenation variance ("Income-tax" vs "Income Tax") that word-splitting
-  // on non-alphanumerics already collapses. It also prefers the shortest
-  // matching title: a query for "Income Tax Act" should land on "The
-  // Income-tax Act, 1961", not "The Income Tax (Amendment) Act".
+  // on non-alphanumerics already collapses. It also prefers the most
+  // comprehensive matching title: a query for "Income Tax Act" should land
+  // on "The Income-tax Act, 1961" (hundreds of sections), not "The Income
+  // Tax (Amendment) Act" (a handful) or an unrelated Act that happens to
+  // share the words "income" and "act".
   const chunks = findCanonicalRows(rows, actName, section).sort((a, b) =>
     (a.chunk_id ?? "").localeCompare(b.chunk_id ?? "", undefined, { numeric: true }),
   );
