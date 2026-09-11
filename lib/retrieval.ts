@@ -252,9 +252,28 @@ async function tavilySearch(
     title: r.title,
     court: safeHostname(r.url),
     url: r.url,
-    text: r.rawContent && r.rawContent.length > 0 ? r.rawContent : r.content,
+    text: stripTavilyElision(r.rawContent && r.rawContent.length > 0 ? r.rawContent : r.content),
     source: "tavily" as const,
   }));
+}
+
+// Tavily's own short-snippet summarization occasionally elides a chunk of
+// the real page mid-sentence and marks the gap with a lone CJK middle dot
+// ("・", U+30FB) -- confirmed live for the Prevention of Corruption Act's
+// India Code listing, where Tavily's snippet read "...1988(49 ・ is
+// intended..." in place of the source's real, unbroken "...1988(49 of
+// 1988) Last Updated 30th December, 2019 Statement of Objects and
+// Reasons.-The Bill is intended...", verified against both Indian Kanoon's
+// own API text and Tavily's own full rawContent for that same page, neither
+// of which contains it. This character has no legitimate place in Indian
+// legal English prose, so wherever it shows up, the text past it is exactly
+// the unreliable, elided remainder Tavily skipped over. Truncating there
+// keeps the source usable and quotable for whatever came before the gap,
+// without risking a synthesis that glues two disconnected fragments
+// together as if they were continuous.
+function stripTavilyElision(text: string): string {
+  const cut = text.indexOf("・");
+  return cut === -1 ? text : text.slice(0, cut).trim();
 }
 
 async function searchTavilyFallback(

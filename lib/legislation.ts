@@ -325,6 +325,25 @@ export function cleanStatutoryText(raw: string, sectionNumber: string): string {
     // to is already stripped above, so the reference itself is now inert
     .replace(/\s*\[\d{1,3}\]/g, "");
 
+  // A chunk's tail sometimes bleeds the START of the NEXT section in --
+  // confirmed live: PC Act s.13's row ends with "> **4[14. Punishment for
+  // habitual offender.** --Whoever convicted...]", section 14's own heading
+  // and text, wrapped in this corpus's normal splice-bracket convention
+  // ("N[wording]") and a blockquote marker. Detected by a blockquote line
+  // opening on a bold, splice-bracketed section heading ("N[M. Title") whose
+  // number M differs from the section actually being cleaned -- this exact
+  // shape (bare "digit-dot", not a parenthesised sub-clause like "(4A)")
+  // only ever appears at the start of a genuine section heading, matching
+  // this very row's own opening "**13. Criminal misconduct...**". Requiring
+  // M to differ from sectionNumber keeps this self-referential-safe: a
+  // splice that happens to start with digits but names THIS section is left
+  // untouched. Runs before unwrapBrackets, which would otherwise strip the
+  // "N[" marker this detection depends on.
+  const trailingSectionBleed = new RegExp(
+    `\\n{0,2}>\\s*\\*{0,2}\\d+\\[(?!${escapedSection}\\b)\\d+[A-Za-z]*\\.[\\s\\S]*$`,
+  );
+  text = text.replace(trailingSectionBleed, "");
+
   text = unwrapBrackets(text);
 
   text = text
@@ -656,14 +675,36 @@ function stripOrphanedClosingBrackets(text: string): string {
 // the script would otherwise have to re-scan all 74,000+ rows once per
 // section just to reach this code path.
 export function stitchSectionText(chunks: LegislationRow[], sectionNumber: string): string {
+  // A section's last chunk sometimes bleeds the heading/label that
+  // introduces the NEXT block of the Act (a later section, chapter, or
+  // schedule) with none of that block's actual body -- confirmed live: IPC
+  // s.420's row ends with "## _Of fraudulent feeds and dispositions of
+  // property_", the heading for the following group of sections (421-424),
+  // not s.420's own text. A genuine structural label meant for THIS section
+  // ("## STATE AMENDMENTS") is always followed by real content within the
+  // same section; one with nothing after it to the end of the section is
+  // therefore never real content here. Checked dataset-wide: restricted to
+  // the section's actual last chunk -- which needs the full chunk list, so
+  // this can't live in cleanStatutoryText, which cleans one chunk at a time
+  // with no view of its neighbours -- this shape covers 818 cases. A naive
+  // version of the same rule with no last-chunk check would wrongly cut
+  // real continuing content in 1,339 of 2,157 cases instead, since 62% of
+  // chunks that end on a heading are followed by more of the section in a
+  // later chunk.
+  const TRAILING_DANGLING_HEADING = /(?:^|\n)\s*#{1,6}\s*[^\n]*\S[^\n]*\s*$/;
+  const lastIndex = chunks.length - 1;
+  const rawTexts = chunks.map((c, i) =>
+    i === lastIndex ? c.text!.replace(TRAILING_DANGLING_HEADING, "") : c.text!,
+  );
+
   // Chunks overlap -- a short lead-in chunk is often wholly contained in the
   // next one -- so joining them blindly prints the provision twice.
   // Every chunk of a section repeats the section's opening line as context
   // ("Income escaping assessment. —If the Assessing Officer..."), so joining
   // them verbatim prints that line once per chunk. Strip it everywhere it
   // recurs as a prefix, keeping only the copy that leads the section.
-  const cleaned = chunks
-    .map((c) => cleanStatutoryText(c.text!, sectionNumber))
+  const cleaned = rawTexts
+    .map((t) => cleanStatutoryText(t, sectionNumber))
     .filter((t) => t.length > 0);
 
   const repeatedHeader = cleaned[0]?.split("\n")[0]?.trim() ?? "";
