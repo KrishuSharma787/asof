@@ -87,7 +87,7 @@ export function AmendmentTimeline({ entries, judgments }: AmendmentTimelineProps
                 y={AXIS_Y + 18}
                 textAnchor="middle"
                 className="fill-stone"
-                style={{ fontSize: "10px" }}
+                style={{ fontSize: "11px" }}
               >
                 {t}
               </text>
@@ -103,14 +103,14 @@ export function AmendmentTimeline({ entries, judgments }: AmendmentTimelineProps
                     y1={AXIS_Y}
                     x2={x(bucket.year)}
                     y2={AXIS_Y - 8 - stackStep(bucket.judgments.length)}
-                    stroke="var(--color-accent-red)"
+                    stroke="var(--color-brand-error-text)"
                     strokeWidth="1"
                   />
                   <circle
                     cx={x(bucket.year)}
                     cy={AXIS_Y - 10 - stackStep(bucket.judgments.length)}
                     r={bucket.judgments.length > 1 ? 4 : 3}
-                    fill="var(--color-accent-red)"
+                    fill="var(--color-brand-error-text)"
                   />
                 </>
               )}
@@ -121,14 +121,14 @@ export function AmendmentTimeline({ entries, judgments }: AmendmentTimelineProps
                     y1={AXIS_Y}
                     x2={x(bucket.year)}
                     y2={AXIS_Y + 8 + stackStep(bucket.amendments.length)}
-                    stroke="var(--color-accent-amber)"
+                    stroke="var(--color-brand-warn-text)"
                     strokeWidth="1"
                   />
                   <circle
                     cx={x(bucket.year)}
                     cy={AXIS_Y + 10 + stackStep(bucket.amendments.length)}
                     r={bucket.amendments.length > 1 ? 4 : 3}
-                    fill="var(--color-accent-amber)"
+                    fill="var(--color-brand-warn-text)"
                   />
                   {bucket.amendments.length > 2 && (
                     <text
@@ -136,7 +136,7 @@ export function AmendmentTimeline({ entries, judgments }: AmendmentTimelineProps
                       y={AXIS_Y + 14 + stackStep(bucket.amendments.length) + 8}
                       textAnchor="middle"
                       className="fill-stone"
-                      style={{ fontSize: "9px" }}
+                      style={{ fontSize: "11px" }}
                     >
                       {bucket.amendments.length}
                     </text>
@@ -149,12 +149,12 @@ export function AmendmentTimeline({ entries, judgments }: AmendmentTimelineProps
       </div>
 
       <div className="mt-2 flex flex-wrap gap-4 text-caption text-steel">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rounded-full bg-accent-red" />
+        <span className="inline-flex items-center gap-2">
+          <span className="inline-block h-2 w-2 rounded-full bg-brand-error-text" />
           Judgments
         </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rounded-full bg-accent-amber" />
+        <span className="inline-flex items-center gap-2">
+          <span className="inline-block h-2 w-2 rounded-full bg-brand-warn-text" />
           Amendments
         </span>
       </div>

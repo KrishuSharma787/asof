@@ -91,7 +91,7 @@ export default function Home() {
       )}
 
       {state.phase === "error" && (
-        <p role="alert" className="text-body-sm font-medium text-accent-red">
+        <p role="alert" className="text-body-sm font-medium text-brand-error-text">
           {state.message}
         </p>
       )}

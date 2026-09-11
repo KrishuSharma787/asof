@@ -29,12 +29,15 @@
   --color-brand-warn: #c37d0d;
   --color-brand-error: #d45656;
 
-  /* Darkened extensions of brand-green/-warn/-error: the raw DESIGN.md tones
-     don't clear 4.5:1 contrast on white/tinted backgrounds at badge/caption
-     sizes, so these accessible variants carry status/confidence text. */
-  --color-accent-green: #00805c;
-  --color-accent-amber: #9c6109;
-  --color-accent-red: #b84a4a;
+  /* Darkened text-contrast variants of brand-green/-warn/-error: the raw
+     DESIGN.md tones don't clear 4.5:1 contrast on white/tinted backgrounds
+     at badge/caption sizes, so these carry status/confidence text while the
+     raw brand-* tones stay reserved for accent surfaces (focus rings,
+     selection) per DESIGN.md. Named after the token they extend, not as a
+     separate "accent" family, so the DESIGN.md lineage stays traceable. */
+  --color-brand-green-text: #00805c;
+  --color-brand-warn-text: #9c6109;
+  --color-brand-error-text: #b84a4a;
 }
 
 @theme inline {
@@ -60,9 +63,9 @@
   --color-brand-warn: var(--color-brand-warn);
   --color-brand-error: var(--color-brand-error);
 
-  --color-accent-green: var(--color-accent-green);
-  --color-accent-amber: var(--color-accent-amber);
-  --color-accent-red: var(--color-accent-red);
+  --color-brand-green-text: var(--color-brand-green-text);
+  --color-brand-warn-text: var(--color-brand-warn-text);
+  --color-brand-error-text: var(--color-brand-error-text);
 
   --font-sans: var(--font-inter);
   --font-mono: var(--font-geist-mono);

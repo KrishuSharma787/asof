@@ -27,7 +27,7 @@ function CourtRating({ court }: { court: string }) {
   const { stars } = classifyCourt(court);
   return (
     <span
-      className="inline-flex items-center gap-0.5 text-steel"
+      className="inline-flex items-center gap-1 text-steel"
       role="img"
       aria-label={`Court weight: ${stars} of 5`}
     >
@@ -71,7 +71,7 @@ export function JudgmentList({ judgments, lastAmendmentYear }: JudgmentListProps
                 {judgment.effect_on_section}
               </p>
               {predatesAmendment && (
-                <p className="mt-1 text-caption text-accent-amber">
+                <p className="mt-1 text-caption text-brand-warn-text">
                   May predate the Act&apos;s last amendment ({lastAmendmentYear}) — check the
                   wording in force at the time.
                 </p>

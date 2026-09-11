@@ -20,7 +20,7 @@ export function ActInputForm({ onSubmit, loading }: ActInputFormProps) {
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4 sm:flex-row sm:items-end">
-      <div className="flex flex-1 flex-col gap-1.5">
+      <div className="flex flex-1 flex-col gap-2">
         <label htmlFor="actName" className="text-body-sm font-medium text-charcoal">
           Act name
         </label>
@@ -35,7 +35,7 @@ export function ActInputForm({ onSubmit, loading }: ActInputFormProps) {
           className="h-10 rounded-md border border-hairline bg-canvas px-3 text-body-md text-ink placeholder:text-muted outline-none focus:border-2 focus:border-brand-green disabled:bg-surface disabled:text-muted"
         />
       </div>
-      <div className="flex flex-col gap-1.5 sm:w-40">
+      <div className="flex flex-col gap-2 sm:w-40">
         <label htmlFor="section" className="text-body-sm font-medium text-charcoal">
           Section <span className="text-steel">(optional)</span>
         </label>

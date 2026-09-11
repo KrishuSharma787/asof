@@ -22,11 +22,11 @@ const STATUS_LABEL: Record<Status, string> = {
 };
 
 const STATUS_STYLE: Record<Status, string> = {
-  in_force: "bg-accent-green/10 text-accent-green",
-  repealed: "bg-accent-red/10 text-accent-red",
+  in_force: "bg-brand-green-text/10 text-brand-green-text",
+  repealed: "bg-brand-error-text/10 text-brand-error-text",
   omitted: "bg-surface text-steel",
-  read_down: "bg-accent-amber/10 text-accent-amber",
-  struck_down: "bg-accent-red/10 text-accent-red",
+  read_down: "bg-brand-warn-text/10 text-brand-warn-text",
+  struck_down: "bg-brand-error-text/10 text-brand-error-text",
   unverified: "bg-surface text-steel",
 };
 
@@ -37,15 +37,20 @@ const CONFIDENCE_LABEL: Record<Confidence, string> = {
 };
 
 const CONFIDENCE_STYLE: Record<Confidence, string> = {
-  high: "bg-accent-green/10 text-accent-green",
-  medium: "bg-accent-amber/10 text-accent-amber",
+  high: "bg-brand-green-text/10 text-brand-green-text",
+  medium: "bg-brand-warn-text/10 text-brand-warn-text",
   low: "bg-surface text-steel",
 };
 
+// DESIGN.md's badge family (badge-required, badge-type, badge-tag) uses
+// rounded.sm for status/label chips; rounded.full is reserved for
+// interactive pills (buttons, tabs) and the one-off promotional
+// badge-discount. These are informational state labels, not controls, so
+// they follow the badge precedent rather than the button one.
 function Badge({ label, className }: { label: string; className: string }) {
   return (
     <span
-      className={`inline-flex items-center rounded-full px-3 py-1 text-body-sm font-medium ${className}`}
+      className={`inline-flex items-center rounded-sm px-3 py-1 text-body-sm font-medium ${className}`}
     >
       {label}
     </span>

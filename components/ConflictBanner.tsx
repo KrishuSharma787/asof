@@ -8,7 +8,7 @@ export function ConflictBanner({ conflicts }: ConflictBannerProps) {
   if (conflicts.length === 0) return null;
 
   return (
-    <section className="mt-6 rounded-lg bg-accent-amber/10 p-5">
+    <section className="mt-6 rounded-lg bg-brand-warn-text/10 p-5">
       <h3 className="text-heading-5 text-ink">Conflicting interpretations found</h3>
       <p className="mt-1 text-body-sm text-steel">
         Courts at the same level reached different readings, and nothing in the retrieved

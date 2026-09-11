@@ -63,11 +63,11 @@ function renderHighlighted(text: string, matches: Match[]): ReactNode[] {
       <a
         key={i}
         href={`#interpretation-note-${m.noteNumber}`}
-        className="rounded-xs bg-accent-amber/15 px-0.5 text-ink no-underline"
+        className="rounded-xs bg-brand-warn-text/15 px-0.5 text-ink no-underline"
       >
         {text.slice(m.start, m.end)}
         {" "}
-        <sup className="text-accent-amber">[{m.noteNumber}]</sup>
+        <sup className="text-brand-warn-text">[{m.noteNumber}]</sup>
       </a>,
     );
     cursor = m.end;
