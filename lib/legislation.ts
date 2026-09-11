@@ -423,7 +423,7 @@ function baseSectionNumber(section: string): string {
 // which one comes first.
 const ACT_NAME_STOPWORDS = new Set(["the", "of", "and", "an", "a", "for"]);
 
-function actNameTokens(actName: string): Set<string> {
+export function actNameTokens(actName: string): Set<string> {
   return new Set(
     actName
       .toLowerCase()
@@ -438,7 +438,7 @@ function actNameTokens(actName: string): Set<string> {
 // don't need to match). Multiple titles can still satisfy this at once (a
 // short Act name is also a substring of its own amendment Acts' titles);
 // callers already break that tie by preferring the shortest matching title.
-function actNameMatches(rowTitle: string, queryTokens: Set<string>): boolean {
+export function actNameMatches(rowTitle: string, queryTokens: Set<string>): boolean {
   if (queryTokens.size === 0) return false;
   const rowTokens = actNameTokens(rowTitle);
   for (const token of queryTokens) {

@@ -1,4 +1,6 @@
 import { tavily } from "@tavily/core";
+import { actNameTokens, actNameMatches } from "./legislation";
+import { actNameWithoutYear } from "./actName";
 
 // Raised from an original 10: live testing found Indian Kanoon reports
 // hundreds of matches for well-litigated sections (674 for Section 66A of
@@ -337,17 +339,74 @@ export async function retrieveAmendmentHistory(
 
 export const STATUTE_BOOK_CAP = 4;
 
+async function fetchIkDoc(
+  apiKey: string,
+  doc: IndianKanoonDocSummary,
+  fallbackCourt: string,
+): Promise<RetrievedJudgment | null> {
+  try {
+    const docRes = await fetchWithTimeout(`https://api.indiankanoon.org/doc/${doc.tid}/`, {
+      method: "POST",
+      headers: { Authorization: `Token ${apiKey}` },
+    });
+    if (!docRes.ok) return null;
+    const docJson = await docRes.json();
+    const text = stripHtml(typeof docJson?.doc === "string" ? docJson.doc : "");
+    if (!text) return null;
+    return {
+      title: docJson?.title ?? doc.title ?? "Untitled provision",
+      court: docJson?.docsource ?? doc.docsource ?? fallbackCourt,
+      url: `https://indiankanoon.org/doc/${doc.tid}/`,
+      text,
+      source: "indiankanoon",
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Force status has to be checked against the statute book, not inferred from
 // judgments. Nothing in the judgment corpus tells you an Act was repealed by
 // a later Act -- the Income-tax Act, 1961 was reported "in force" here long
 // after s.536 of the Income Tax Act, 2025 repealed it, because no retrieved
 // judgment happened to mention it.
 //
-// IK's doctypes:laws searches the bare statute book, and a repealing
-// provision states it in quotable terms ("The Income-tax Act, 1961 is hereby
-// repealed"), which feeds our verbatim-quote validator directly. Verified
-// discriminating: this returns the repealing provision as the top hit for
-// the 1961 Act, and only unrelated noise for an Act that is still live.
+// Two searches, for the two things "force status" can mean:
+//
+// 1. Was this Act repealed BY SOMETHING ELSE? IK's doctypes:laws searches
+//    the bare statute book, and a repealing provision states it in quotable
+//    terms ("The Income-tax Act, 1961 is hereby repealed"), which feeds our
+//    verbatim-quote validator directly. Verified discriminating: this
+//    returns the repealing provision as the top hit for the 1961 Act, and
+//    only unrelated noise for an Act that is still live -- IK's phrase
+//    search falls back to loose matching once nothing satisfies the full
+//    quoted phrase, which is every Act that hasn't been repealed. That
+//    noise is harmless (the model is told to read for near-misses) but
+//    expected: this search alone only ever produces evidence for one of the
+//    two directions.
+//
+// 2. Does this Act ITSELF still exist as a live entry in the current
+//    statute book? Confirmed live that a positive "X is in force" sentence
+//    essentially never exists in nature -- legal commentary cites and
+//    applies a current Act, it doesn't narrate that the Act is current, so
+//    requiring one made "in_force" nearly unreachable even for prominent
+//    Acts (tested: zero such sentences anywhere in the retrieved sources
+//    for the Prevention of Money-Laundering Act, 2002, a heavily-litigated
+//    Act). An unqualified doctypes:laws search reliably surfaces this Act's
+//    own listing as a top hit -- but what kind of listing differs by Act:
+//    a state Act gets its own bare "Act"-level page (confirmed for an
+//    obscure 2012 Delhi amendment Act with no other online footprint at
+//    all), while a central/Union Act appears to have no separate bare page
+//    at all -- only per-Section entries (confirmed for PMLA, IPC, and the
+//    Maternity Benefit Act: the unqualified search's first page is section
+//    after section, never the Act on its own). Either kind still proves
+//    the point: a fetched section document's own text repeats its full
+//    title first ("Section 3 in The Prevention of Money-Laundering Act,
+//    2002 3. Offence of money-laundering. -..."), so it is just as
+//    quotable evidence that the Act is currently live in IK's index as the
+//    bare listing is. A quoted exact-phrase search does NOT reliably find
+//    either kind for a central Act (confirmed empty/irrelevant for PMLA),
+//    so this drops the quotes the repeal search still needs.
 export async function retrieveStatuteBook(
   rawActName: string,
 ): Promise<RetrievedJudgment[]> {
@@ -355,35 +414,41 @@ export async function retrieveStatuteBook(
   if (!apiKey) return [];
 
   const actName = sanitizeInput(rawActName);
+  const queryTokens = actNameTokens(actNameWithoutYear(actName));
 
   try {
-    const docs = await ikSearch(apiKey, `"${actName}" "hereby repealed" doctypes:laws`);
-    const topDocs = docs.slice(0, STATUTE_BOOK_CAP);
+    const [repealDocs, listingDocs] = await Promise.all([
+      ikSearch(apiKey, `"${actName}" "hereby repealed" doctypes:laws`),
+      ikSearch(apiKey, `${actName} doctypes:laws`).catch(() => []),
+    ]);
 
-    const fetched = await Promise.all(
-      topDocs.map(async (doc): Promise<RetrievedJudgment | null> => {
-        try {
-          const docRes = await fetchWithTimeout(`https://api.indiankanoon.org/doc/${doc.tid}/`, {
-            method: "POST",
-            headers: { Authorization: `Token ${apiKey}` },
-          });
-          if (!docRes.ok) return null;
-          const docJson = await docRes.json();
-          const text = stripHtml(typeof docJson?.doc === "string" ? docJson.doc : "");
-          if (!text) return null;
-          return {
-            title: docJson?.title ?? doc.title ?? "Untitled provision",
-            court: docJson?.docsource ?? doc.docsource ?? "Statute book",
-            url: `https://indiankanoon.org/doc/${doc.tid}/`,
-            text,
-            source: "indiankanoon",
-          };
-        } catch {
-          return null;
-        }
-      }),
-    );
+    const repealFetches = repealDocs
+      .slice(0, STATUTE_BOOK_CAP)
+      .map((doc) => fetchIkDoc(apiKey, doc, "Statute book"));
 
+    // A "Section N in The X Act, YYYY" title names the Act it belongs to
+    // after "in "; strip that down to the Act name itself before matching,
+    // so a section page counts the same as a bare Act page would.
+    // actNameMatches confirms every word in the query appears in whichever
+    // portion this is, ruling out the loosely-related noise IK's search
+    // otherwise mixes in.
+    const SECTION_PREFIX = /^section\s+\S+\s+in\s+/i;
+    const candidates = listingDocs
+      .map((d) => {
+        const title = d.title ?? "";
+        const isSection = SECTION_PREFIX.test(title);
+        return { doc: d, isSection, actPortion: isSection ? title.replace(SECTION_PREFIX, "") : title };
+      })
+      .filter((c) => actNameMatches(c.actPortion, queryTokens));
+
+    // A bare Act-level page is the better quote (the Act's own title and
+    // preamble, not one arbitrary section's text) when one exists; a
+    // matching section page is still solid confirmation the Act is
+    // currently live in IK's index, so it's an acceptable fallback.
+    const ownListing = candidates.find((c) => !c.isSection)?.doc ?? candidates[0]?.doc;
+    const listingFetch = ownListing ? fetchIkDoc(apiKey, ownListing, "Statute book") : null;
+
+    const fetched = await Promise.all([...repealFetches, listingFetch]);
     return fetched.filter((d): d is RetrievedJudgment => d !== null);
   } catch (err) {
     console.error("[retrieval] statute-book check failed:", err);
