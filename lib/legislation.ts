@@ -38,7 +38,7 @@ export interface StatutorySection {
   enactmentYear: number | null;
 }
 
-interface LegislationRow {
+export interface LegislationRow {
   act_id?: string;
   chunk_id?: string;
   title?: string;
@@ -115,6 +115,79 @@ async function loadRows(): Promise<LegislationRow[] | null> {
   return loadInFlight;
 }
 
+// Exposed for scripts/verify-statutory-formatting.mts, which runs
+// cleanStatutoryText across every row in the snapshot -- a fix verified
+// against one hand-picked Act/section can still be wrong for the other
+// 74,000+ rows, which is exactly how repeated formatting bugs kept slipping
+// through on this feature.
+export async function getAllLegislationRows(): Promise<LegislationRow[] | null> {
+  return loadRows();
+}
+
+// Square brackets carry at least three different meanings in this corpus,
+// and the PDF-to-text conversion doesn't mark which is which:
+//   1. an inline splice with its footnote digit still attached -- "the
+//      2[Assessing Officer]" -- wrapping the CURRENT (post-amendment)
+//      wording, digit pointing at a footnote definition already stripped
+//      elsewhere.
+//   2. a genuine citation note that isn't a splice at all -- "[Vide Andhra
+//      Pradesh Act 22 of 2018, sec. 5 (w.e.f. 1-1-2014)]", "[See section
+//      57]" -- meant to stay bracketed exactly as written.
+// A splice can itself contain further splices -- an entire inserted
+// sub-section wrapped in one outer digit-bracket, with its own nested
+// footnote markers inside ("1[(4A) Where... 5[(b) to any other
+// establishment...]...]") -- so pairing brackets with a plain (non-nesting)
+// regex only ever finds the FIRST inner "]" and gives up, leaving the outer
+// "[" -- and every citation bracket downstream of it -- dangling. Confirmed
+// live across the snapshot: Income-tax Act s.7's "1[ 80-IE. Special
+// provisions..." and RFCTLARR's state-amendment "[ Vide Andhra Pradesh
+// Act..." were both left broken by a regex-only pairing attempt, for
+// opposite reasons. A single left-to-right scan tracking bracket depth on a
+// stack handles both, however deep either nests: a splice's digit and
+// brackets are dropped, keeping its wording; a citation's brackets are kept.
+// `\b` treats "_" as a word character, so it isn't a boundary between "Vide"
+// and a trailing italics underscore -- "[ _Vide_ Andhra Pradesh Act..." was
+// confirmed live to fail this check and get unwrapped as if it were a
+// splice, because "\bvide\b" doesn't match "vide" immediately followed by
+// "_". A negative lookahead for a following letter has the same effect
+// without that gap: it rejects "videophone" but accepts "vide" followed by
+// "_", punctuation, whitespace, or end of string.
+const CITATION_BRACKET = /^\s*_*\s*(?:vide|see)(?![a-zA-Z])/i;
+function unwrapBrackets(input: string): string {
+  let out = "";
+  const stack: Array<"splice" | "citation"> = [];
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+
+    if (ch === "[") {
+      const digitPrefix = /(\d+)(\*{0,2})$/.exec(out);
+      if (digitPrefix) {
+        out = out.slice(0, out.length - digitPrefix[0].length);
+        stack.push("splice");
+      } else if (CITATION_BRACKET.test(input.slice(i + 1, i + 20))) {
+        stack.push("citation");
+        out += ch;
+      } else {
+        stack.push("splice");
+      }
+      continue;
+    }
+
+    if (ch === "]") {
+      const kind = stack.pop();
+      if (kind === "citation") out += ch;
+      else if (kind === "splice") out = out.replace(/\*{0,2}$/, "");
+      else out += ch; // an unmatched "]" already in the source -- leave as-is
+      continue;
+    }
+
+    out += ch;
+  }
+
+  return out;
+}
+
 // India Code text ships wrapped in apparatus that is not part of the law:
 // a metadata banner ("Act: ... | India | Central | In Force"), numbered
 // footnote markers splicing amended words into the provision ("the
@@ -137,7 +210,12 @@ export function cleanStatutoryText(raw: string, sectionNumber: string): string {
   // title interspersed with the actual amendment text). Consuming through
   // the end of the "Section N:" line -- not just the colon -- removes the
   // whole banner, including the earlier "In Force" line it's chained after.
-  const header = new RegExp(`^[\\s\\S]*?\\bSection\\s+${escapedSection}\\s*:[^\\n]*\\n+`, "i");
+  // The declared section number can also be a bare top-level number
+  // ("117") while the chunk itself actually opens mid-section at a
+  // sub-clause ("Section 117(2):") -- a chunk boundary can fall there just
+  // as easily as at the top of the section -- so a short optional suffix
+  // after the number is allowed rather than requiring an exact match.
+  const header = new RegExp(`^[\\s\\S]*?\\bSection\\s+${escapedSection}[\\w()]*\\s*:[^\\n]*\\n+`, "i");
   text = text.replace(header, "");
   // Fall back to cutting at the banner's last pipe if the section label is
   // formatted unusually, so we never leave the "| In Force" line in place.
@@ -148,16 +226,30 @@ export function cleanStatutoryText(raw: string, sectionNumber: string): string {
   text = text
     // footnote definitions: "> 3. Subs. by Act 3 of 1989, s. 23, for ... ."
     .replace(/>\s*\d+\.\s*(?:Subs|Ins|Omitted|Added|Substituted|Inserted|Renumbered)\.?\s+by[^\n]*/gi, " ")
-    // inline markers that splice amended wording in: "the 2[Assessing Officer]"
-    .replace(/\b\d+\s*\*{0,2}\[\*{0,2}/g, "")
-    .replace(/\]/g, "")
+    // an OCR placeholder for a scanned image/diagram the conversion couldn't
+    // render -- not part of the statutory text, e.g. "==> picture [345 x
+    // 550] intentionally omitted <=="
+    .replace(/\*{0,2}==>\s*picture\s*\[[^\]\n]*\]\s*intentionally omitted\s*<==\*{0,2}/gi, "")
+    // a bare footnote-reference marker with no wording attached (a
+    // conversion glitch detaches the digit from its wording bracket: "the[3]
+    // [Assessing Officer]"), or a standalone "[N]": the definition it points
+    // to is already stripped above, so the reference itself is now inert
+    .replace(/\s*\[\d{1,3}\]/g, "");
+
+  text = unwrapBrackets(text);
+
+  text = text
     .replace(/\*{2,}/g, "")
     // leftover markdown blockquote markers from the PDF-to-text conversion
     .replace(/^\s*>\s?/gm, "")
-    // bare code-fence lines: an artifact of the PDF-to-text conversion (the
-    // source is legislative text, not code -- these mark a page/column break
-    // in the original, not a real fenced block)
-    .replace(/^\s*```\s*$/gm, "")
+    // code-fence markers: an artifact of the PDF-to-text conversion (the
+    // source is legislative text, not code -- these mark a page/column
+    // break in the original, not a real fenced block). Usually a bare
+    // "```" alone on its own line, but at least one Act's conversion
+    // produced "```html" inline ahead of real content on the same line, so
+    // the marker itself -- with an optional language tag -- is stripped
+    // wherever it appears rather than only when it has a line to itself.
+    .replace(/```\w*/g, "")
     // markdown heading syntax on genuine structural labels this Act's text
     // carries ("## STATE AMENDMENTS", "## Andhra Pradesh"): keep the label,
     // drop the "#" markers, which our plain-text rendering can't interpret
@@ -168,6 +260,12 @@ export function cleanStatutoryText(raw: string, sectionNumber: string): string {
     // "( _a_ )", "_Vide_" -- reported live as unprofessional. Keep the text
     // the italics were wrapping, drop the underscores.
     .replace(/_+([^_\n]+?)_+/g, "$1")
+    // a lone, unpaired underscore is OCR noise rather than italic markup --
+    // confirmed live in a heavily garbled 1866 Act ("this Part_ of this
+    // Act") with no second underscore anywhere nearby to pair it with.
+    // Underscores play no legitimate role in Indian statutory prose either
+    // way, so whatever's left over at this point is dropped outright.
+    .replace(/_/g, "")
     // tighten the space the italics left behind inside short parenthetical
     // labels: "( 1 )" -> "(1)", "( a )" -> "(a)"
     .replace(/\(\s+([a-zA-Z0-9]{1,4})\s+\)/g, "($1)")
@@ -319,6 +417,78 @@ function normalizeActName(actName: string): string {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// unwrapBrackets pairs brackets within a single chunk's raw text, but a
+// splice can straddle a chunk boundary -- opened in one chunk, closed in
+// the next -- since the parquet snapshot splits long sections into chunks
+// independently of where a splice marker happens to fall. Each chunk is
+// cleaned on its own before this point (cleanStatutoryText has no way to
+// see past its own chunk), so a boundary-straddling splice's closer is
+// left as a stray "]" with no opener anywhere in its own chunk's output.
+// Confirmed live across the snapshot on 3900+ chunks, e.g. Income-tax Act
+// s.142's "...tax:]\nProvided that...". Run once on the fully joined
+// section text, this drops exactly that stray "]" and nothing else: any
+// "]" that already has an unclosed "[" before it in the joined text is a
+// real, resolvable pair and is left alone.
+function stripOrphanedClosingBrackets(text: string): string {
+  let depth = 0;
+  let out = "";
+  for (const ch of text) {
+    if (ch === "[") {
+      depth++;
+      out += ch;
+    } else if (ch === "]") {
+      if (depth > 0) {
+        depth--;
+        out += ch;
+      }
+      // else: no opener anywhere before it in the joined text -- drop it
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+// Long sections are stored as several chunks; this stitches them back
+// together in chunk_id order. That matters beyond completeness -- India
+// Code's amendment footnotes ("Subs. by Act 3 of 1989, s. 23 ... (w.e.f.
+// 1-4-1989)") are what the amendment timeline is mined from, and they sit at
+// the end of a section, so a single chunk usually misses them.
+//
+// Exposed (rather than inlined into fetchStatutoryText) for
+// scripts/verify-statutory-formatting.mts, which exercises this exact
+// stitching logic against every multi-chunk section in the snapshot --
+// chunk-spanning artifacts like a splice bracket that opens in one chunk
+// and closes in the next only show up once chunks are actually joined, and
+// the script would otherwise have to re-scan all 74,000+ rows once per
+// section just to reach this code path.
+export function stitchSectionText(chunks: LegislationRow[], sectionNumber: string): string {
+  // Chunks overlap -- a short lead-in chunk is often wholly contained in the
+  // next one -- so joining them blindly prints the provision twice.
+  // Every chunk of a section repeats the section's opening line as context
+  // ("Income escaping assessment. —If the Assessing Officer..."), so joining
+  // them verbatim prints that line once per chunk. Strip it everywhere it
+  // recurs as a prefix, keeping only the copy that leads the section.
+  const cleaned = chunks
+    .map((c) => cleanStatutoryText(c.text!, sectionNumber))
+    .filter((t) => t.length > 0);
+
+  const repeatedHeader = cleaned[0]?.split("\n")[0]?.trim() ?? "";
+  const recurs =
+    repeatedHeader.length > 20 &&
+    cleaned.filter((c) => c.trimStart().startsWith(repeatedHeader)).length > 1;
+
+  const cleanedChunks = cleaned.map((chunk, i) => {
+    if (!recurs || i === 0) return chunk;
+    const trimmed = chunk.trimStart();
+    return trimmed.startsWith(repeatedHeader)
+      ? trimmed.slice(repeatedHeader.length).trimStart()
+      : chunk;
+  });
+
+  return stripOrphanedClosingBrackets(cleanedChunks.join("\n\n"));
+}
+
 export async function fetchStatutoryText(
   actName: string,
   section: string,
@@ -346,11 +516,6 @@ export async function fetchStatutoryText(
     .map((m) => m.title ?? "")
     .sort((a, b) => a.length - b.length)[0];
 
-  // Long sections are stored as several chunks; stitch them back together in
-  // chunk_id order. This matters beyond completeness -- India Code's
-  // amendment footnotes ("Subs. by Act 3 of 1989, s. 23 ... (w.e.f.
-  // 1-4-1989)") are what the amendment timeline is mined from, and they sit
-  // at the end of a section, so a single chunk usually misses them.
   const chunks = matches
     .filter((m) => (m.title ?? "") === bestTitle)
     .sort((a, b) => (a.chunk_id ?? "").localeCompare(b.chunk_id ?? "", undefined, { numeric: true }));
@@ -358,31 +523,8 @@ export async function fetchStatutoryText(
   const first = chunks[0];
   const sectionNumber = first.section_number ?? section;
 
-  // Chunks overlap -- a short lead-in chunk is often wholly contained in the
-  // next one -- so joining them blindly prints the provision twice.
-  // Every chunk of a section repeats the section's opening line as context
-  // ("Income escaping assessment. —If the Assessing Officer..."), so joining
-  // them verbatim prints that line once per chunk. Strip it everywhere it
-  // recurs as a prefix, keeping only the copy that leads the section.
-  const cleaned = chunks
-    .map((c) => cleanStatutoryText(c.text!, sectionNumber))
-    .filter((t) => t.length > 0);
-
-  const repeatedHeader = cleaned[0]?.split("\n")[0]?.trim() ?? "";
-  const recurs =
-    repeatedHeader.length > 20 &&
-    cleaned.filter((c) => c.trimStart().startsWith(repeatedHeader)).length > 1;
-
-  const cleanedChunks = cleaned.map((chunk, i) => {
-    if (!recurs || i === 0) return chunk;
-    const trimmed = chunk.trimStart();
-    return trimmed.startsWith(repeatedHeader)
-      ? trimmed.slice(repeatedHeader.length).trimStart()
-      : chunk;
-  });
-
   return {
-    text: cleanedChunks.join("\n\n"),
+    text: stitchSectionText(chunks, sectionNumber),
     title: first.title ?? actName,
     sectionNumber: first.section_number ?? section,
     sourceUrl: first.source_url!,
