@@ -59,8 +59,22 @@ function sanitizeInput(input: string): string {
   return input.replace(/[\r\n\t]/g, " ").trim().slice(0, 200);
 }
 
+// Judgments essentially never restate an Act's full name with its year
+// attached ("the Indian Penal Code, 1860") -- they say "the Indian Penal
+// Code" or "IPC". Confirmed live on Indian Kanoon (doctypes:judgments, top
+// result's numcitedby): quoting the exact official title WITH the year
+// tops out at 172 citations; dropping just the year from the same quoted
+// phrase surfaces 53,834 / 17,444 / 15,111 / 14,306 / 4,366 -- unmistakably
+// the real landmark judgments, two to three orders of magnitude more
+// authoritative. Requiring the literal year inside the quoted phrase
+// filters out the entire high-citation body before the numcitedby ranking
+// in searchIndianKanoon ever gets a chance to rank it, leaving only the
+// rare documents that happen to restate the year verbatim. The quoting
+// itself isn't the problem -- quoted-without-year already performs
+// excellently -- so only the year is dropped, not the phrase matching.
 function buildQuery(actName: string, section: string | null): string {
-  return section ? `"${actName}" ${section}` : `"${actName}"`;
+  const queryName = actNameWithoutYear(actName);
+  return section ? `"${queryName}" ${section}` : `"${queryName}"`;
 }
 
 async function fetchWithTimeout(

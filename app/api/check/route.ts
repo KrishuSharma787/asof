@@ -6,7 +6,7 @@ import {
   retrieveStatuteBook,
   type RetrievedJudgment,
 } from "@/lib/retrieval";
-import { fetchStatutoryText, fetchActAmendments } from "@/lib/legislation";
+import { fetchStatutoryText, fetchActAmendments, resolveActName } from "@/lib/legislation";
 import { synthesizeInterpretation, GeminiError } from "@/lib/gemini";
 import { validateInterpretationResult } from "@/lib/validation";
 import type { CitationEdge } from "@/lib/groq";
@@ -25,7 +25,7 @@ export const maxDuration = 60;
 // it change, so a stale entry from before the change is never served. Cached
 // answers are as version-bound as the schema: a prompt fix that corrects a
 // wrong status is worthless if yesterday's wrong answer is still served.
-const RESPONSE_SCHEMA_VERSION = "21";
+const RESPONSE_SCHEMA_VERSION = "22";
 
 interface CheckRequestBody {
   actName?: unknown;
@@ -74,9 +74,16 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
-  const actName = body.actName;
   const section =
     typeof body.section === "string" && body.section.trim().length > 0 ? body.section : null;
+
+  // Free-text input varies from the dataset's own titles in ways that break
+  // Indian Kanoon's exact-phrase judgment search but not the parquet lookup
+  // (see resolveActName's own comment) -- resolving once here means every
+  // downstream retrieval call, and the cache key, work from the same
+  // precise name instead of whatever the user typed. A no-op for anything
+  // outside the Vaquill snapshot's coverage.
+  const actName = await resolveActName(body.actName);
 
   const cacheKey = `${buildCacheKey(actName, section)}::v${RESPONSE_SCHEMA_VERSION}`;
   const cached = getCached<CheckResponseBody>(cacheKey);

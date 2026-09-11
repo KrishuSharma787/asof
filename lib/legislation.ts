@@ -124,6 +124,63 @@ export async function getAllLegislationRows(): Promise<LegislationRow[] | null> 
   return loadRows();
 }
 
+// Free-text input varies from the dataset's own titles in ways
+// actNameTokens/actNameMatches already tolerate for the amendment/statutory-
+// text lookups (word order, stopwords, hyphenation) -- but that tolerance
+// only ever fed a boolean "is this a match" check, never fed BACK into what
+// gets searched elsewhere. An extra informal word ("Indian Penal Code ACT,
+// 1860" -- IPC is a Code, not an Act, a common colloquial slip) or a
+// dropped "The" doesn't break the parquet lookup (word-set matching
+// tolerates it), but it does break Indian Kanoon's exact-phrase judgment
+// search (see buildQuery in lib/retrieval.ts), which has no such tolerance.
+// Resolving to the dataset's own title once, up front, means every
+// downstream retrieval call -- not just the one that's specifically
+// broken -- works from the same precise, correctly-worded name instead of
+// whatever the user typed. A no-op (returns the input unchanged) whenever
+// nothing in the snapshot matches -- most commonly a state Act, or any Act
+// genuinely outside the snapshot's coverage -- so this never blocks or
+// worsens a query that worked before.
+// The dataset's own titles carry citation/repeal bookkeeping no one actually
+// says out loud: a repealed Act's title runs "<Title>, <N> of <year> (Rep.,
+// Act <N> of <year>)" (e.g. "The Indian Penal Code, 45 of 1860 (Rep., Act 45
+// of 2023)"), where "<N> of <year>" is India's standard Act-citation format,
+// not part of the name. Confirmed live: resolving IPC without this cleanup
+// would hand buildQuery that entire string to quote -- worse than the raw
+// input, since that exact phrase (repeal annotation included) appears
+// nowhere in any judgment. Stripping it here, once, is what turns the
+// resolved name into "The Indian Penal Code" -- the specific query already
+// confirmed (see buildQuery's own comment) to surface the real landmark
+// judgments. A currently-in-force Act's title carries no such suffix and is
+// returned unchanged.
+function cleanDatasetTitle(title: string): string {
+  return title
+    .replace(/,?\s*\(Rep\.?,?\s*Act\s+\d+\s+of\s+\d{4}\s*\)/gi, "")
+    .replace(/,?\s*\d+\s+of\s+\d{4}\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/,\s*$/, "");
+}
+
+export async function resolveActName(rawActName: string): Promise<string> {
+  const rows = await loadRows();
+  if (!rows) return rawActName;
+
+  const queryTokens = actNameTokens(actNameWithoutYear(rawActName));
+  if (queryTokens.size === 0) return rawActName;
+
+  const titles = new Set<string>();
+  for (const row of rows) {
+    if (row.title && actNameMatches(row.title, queryTokens)) titles.add(row.title);
+  }
+  if (titles.size === 0) return rawActName;
+
+  // Same tie-break already used by fetchActAmendments/fetchStatutoryText:
+  // the shortest matching title is the base Act, not one of its amendment
+  // Acts or a longer Act that happens to share every word.
+  const best = [...titles].sort((a, b) => a.length - b.length)[0];
+  return cleanDatasetTitle(best);
+}
+
 // Square brackets carry at least three different meanings in this corpus,
 // and the PDF-to-text conversion doesn't mark which is which:
 //   1. an inline splice with its footnote digit still attached -- "the
